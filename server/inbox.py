@@ -125,6 +125,12 @@ def scan(days=None, limit=None):
                 if db.row("SELECT 1 FROM sent_log WHERE key=?", (key,)):
                     continue
                 mark = lambda: db.run("INSERT OR IGNORE INTO sent_log(key) VALUES (?)", (key,))
+                if kind == "inbox" and db.get_setting("subs_email_watch", True):
+                    try:  # receipts/trials often come from no-reply senders, so check before the skip filter
+                        from . import subs_email
+                        subs_email.handle_message(msg, mid)
+                    except Exception as e:
+                        log.warning("subscription check failed: %s", e)
                 sender = str(msg.get("To" if kind == "sent" else "From") or "")
                 addr = parseaddr(sender)[1].lower()
                 if kind == "inbox" and (msg.get("List-Unsubscribe") or msg.get("Precedence") in ("bulk", "list") or SKIP_SENDER.search(addr) or addr == me):

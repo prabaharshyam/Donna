@@ -181,6 +181,7 @@ async function refreshBoot() {
   $("#navInbox").textContent = b.inbox_pending || "";
   $("#navPeople").innerHTML = b.birthdays_soon ? icon("gift") : "";
   $("#navRenewals").textContent = b.renewals_soon || "";
+  $("#navSubs").textContent = b.subs_alerts || "";
   $("#navVault").innerHTML = b.vault.configured ? (b.vault.unlocked ? icon("unlock") : "") : "";
   $("#statusLine").innerHTML = `
     <span title="AI model"><i id="aiDot"></i>AI</span>
@@ -237,8 +238,10 @@ VIEWS[""] = async (el) => {
     <div class="card voice-card"><button class="play" id="playBrief" title="Play briefing">${icon("play")}</button>
       <div style="flex:1"><b>Your briefing, read aloud</b><span class="muted" style="font-size:13px">About a minute. Then tap the mic and talk back: “add pick up dry cleaning”, “move the dentist to 5”.</span></div>
       <button class="btn sm" id="talkBtn">${icon("mic")}Talk to Donna</button></div>
-    ${(b.birthdays?.length || b.renewals_due?.length || b.reach_out?.length) ? `<div class="card" style="margin-bottom:16px"><div class="card-head">${icon("gift")}<h3>Coming up</h3></div><div class="card-body" style="display:flex;flex-wrap:wrap;gap:8px">
+    ${(b.birthdays?.length || b.renewals_due?.length || b.reach_out?.length || b.trials_ending?.length || b.subscriptions_due?.length) ? `<div class="card" style="margin-bottom:16px"><div class="card-head">${icon("gift")}<h3>Coming up</h3></div><div class="card-body" style="display:flex;flex-wrap:wrap;gap:8px">
       ${(b.birthdays || []).map((p) => `<a class="chip accent" href="#/people">🎂 ${esc(p.name)} · ${p.in_days === 0 ? "today" : p.in_days === 1 ? "tomorrow" : "in " + p.in_days + " days"}${p.turning ? " · turning " + p.turning : ""}</a>`).join("")}
+      ${(b.trials_ending || []).map((t) => `<a class="chip ${t.in_days <= 2 ? "warn" : "accent"}" href="#/subscriptions">⏳ ${esc(t.name)} trial · cancel by ${fmtDate(t.cancel_by)}</a>`).join("")}
+      ${(b.subscriptions_due || []).map((x) => `<a class="chip" href="#/subscriptions">${icon("card")}${esc(x.name)} ${esc(x.charges)} · ${x.in_days === 0 ? "today" : "in " + x.in_days + "d"}</a>`).join("")}
       ${(b.renewals_due || []).map((r) => `<a class="chip ${r.days_left < 0 ? "warn" : ""}" href="#/renewals">${icon("refresh")}${esc(r.title)} · ${r.days_left < 0 ? "overdue" : r.days_left === 0 ? "due today" : "in " + r.days_left + "d"}</a>`).join("")}
       ${(b.reach_out || []).map((p) => `<a class="chip" href="#/people">${icon("users")}Reach out to ${esc(p.name)}</a>`).join("")}
       ${b.inbox_commitments_pending ? `<a class="chip accent" href="#/inbox">${icon("mail")}${b.inbox_commitments_pending} from your email</a>` : ""}</div></div>` : ""}
@@ -280,6 +283,8 @@ function spokenBriefing(b, open, name) {
   const due = open.filter((t) => !b.overdue.find((o) => o.id === t.id));
   if (due.length) parts.push(`On your list for today: ${due.slice(0, 5).map((t) => t.title).join(", ")}.`);
   (b.birthdays || []).forEach((p) => parts.push(`${p.name}'s birthday is ${p.in_days === 0 ? "today" : p.in_days === 1 ? "tomorrow" : "in " + p.in_days + " days"}.`));
+  (b.trials_ending || []).forEach((t) => parts.push(`Your ${t.name} free trial ends ${t.in_days === 0 ? "today" : "in " + t.in_days + " days"}. Cancel by ${fmtDate(t.cancel_by, { weekday: "long", day: "numeric", month: "long" })} if you don't want to pay.`));
+  (b.subscriptions_due || []).forEach((x) => parts.push(`${x.name} will charge ${x.charges.startsWith("₹") ? x.charges.slice(1) + " rupees" : x.charges} ${x.in_days === 0 ? "today" : "in " + x.in_days + " days"}.`));
   (b.renewals_due || []).forEach((r) => parts.push(`${r.title} is ${r.days_left < 0 ? "overdue" : r.days_left === 0 ? "due today" : "due in " + r.days_left + " days"}.`));
   if (b.reach_out?.length) parts.push(`You might want to reach out to ${b.reach_out.map((p) => p.name).join(" and ")}.`);
   if (b.inbox_commitments_pending) parts.push(`I found ${b.inbox_commitments_pending} commitments in your email for you to review.`);
@@ -294,8 +299,8 @@ function renderTaskMini(box, tasks) {
 }
 
 // ============================== CHAT ==============================
-const AGENT_LABEL = { tasks: "To-do agent", calendar: "Calendar agent", journal: "Journal agent", ideas: "Ideas agent", memory: "Memory agent", briefing: "Briefing agent", general: "Donna" };
-const TOOL_LABEL = { list_tasks: "Checked tasks", add_task: "Added task", update_task: "Updated task", complete_task: "Completed task", delete_task: "Deleted task", list_projects: "Checked lists", get_events: "Checked calendar", create_event: "Booked event", delete_event: "Cancelled event", find_free_time: "Found free time", write_journal: "Wrote journal", read_journal: "Read journal", search_journal: "Searched journal", add_idea: "Saved idea", list_ideas: "Checked ideas", remember: "Remembered", recall: "Searched memory", vault_lookup: "Opened vault", get_briefing: "Prepared briefing" };
+const AGENT_LABEL = { subscriptions: "Subscriptions agent", goals: "Goals mentor", people: "People agent", renewals: "Renewals agent", tasks: "To-do agent", calendar: "Calendar agent", journal: "Journal agent", ideas: "Ideas agent", memory: "Memory agent", briefing: "Briefing agent", general: "Donna" };
+const TOOL_LABEL = { list_subscriptions: "Checked subscriptions", add_subscription: "Saved subscription", update_subscription: "Updated subscription", cancel_subscription: "Cancelled subscription", record_subscription_charge: "Logged payment", subscription_spend: "Checked spending", subscription_suggestions: "Checked email finds", send_to_phone: "Sent to phone", list_tasks: "Checked tasks", add_task: "Added task", update_task: "Updated task", complete_task: "Completed task", delete_task: "Deleted task", list_projects: "Checked lists", get_events: "Checked calendar", create_event: "Booked event", delete_event: "Cancelled event", find_free_time: "Found free time", write_journal: "Wrote journal", read_journal: "Read journal", search_journal: "Searched journal", add_idea: "Saved idea", list_ideas: "Checked ideas", remember: "Remembered", recall: "Searched memory", vault_lookup: "Opened vault", get_briefing: "Prepared briefing" };
 
 VIEWS.chat = async (el, r) => {
   if (r?.params.get("ask")) { state.pendingAsk = r.params.get("ask"); state.chat.cid = null; history.replaceState(null, "", "#/chat"); }
@@ -1089,7 +1094,7 @@ async function vaultDetail(id) {
 }
 
 // ============================== SETTINGS (Admin) ==============================
-const S_SECTIONS = [["profile", "Profile", "user"], ["ai", "AI model", "cpu"], ["email", "Email & reminders", "mail"], ["inbox", "Inbox triage", "inbox"], ["automation", "Briefings & prep", "sun"], ["google", "Google Calendar", "calendar"], ["phone", "Phone & Telegram", "phone"], ["voice", "Voice", "volume"], ["security", "Vault", "lock"], ["login", "Login & hosting", "shield"], ["skills", "Agent skills", "sparkle"], ["data", "Data & appearance", "download"]];
+const S_SECTIONS = [["profile", "Profile", "user"], ["ai", "AI model", "cpu"], ["email", "Email & reminders", "mail"], ["inbox", "Inbox triage", "inbox"], ["automation", "Briefings & prep", "sun"], ["subs", "Subscriptions", "card"], ["google", "Google Calendar", "calendar"], ["phone", "Phone & Telegram", "phone"], ["voice", "Voice", "volume"], ["security", "Vault", "lock"], ["login", "Login & hosting", "shield"], ["skills", "Agent skills", "sparkle"], ["data", "Data & appearance", "download"]];
 
 VIEWS.settings = async (el, r) => {
   const s = await GET("/api/settings");
@@ -1140,6 +1145,14 @@ VIEWS.settings = async (el, r) => {
     ${row("Morning briefing", "Email + notification with your day", `<div style="display:flex;gap:10px;align-items:center">${sw("briefing_enabled", s.briefing_enabled)}${inp("briefing_time", s.briefing_time, 'type="time"')}</div>`)}
     ${row("Evening journal nudge", "Notification if you haven't written yet (blank = off)", inp("journal_nudge_time", s.journal_nudge_time, 'type="time"'))}
     <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn primary" data-save>Save</button><button class="btn" id="testEmail">${icon("mail")}Send test email</button><button class="btn" id="sendBrief">${icon("sun")}Send briefing now</button></div></section>
+
+  <section class="card s-section" id="s-subs" data-form><h2>Subscriptions</h2><p class="desc">How Donna counts and watches what you pay for on repeat.</p>
+    ${row("Home currency", "Totals are shown in this currency", `<select class="select" name="home_currency">${["INR", "USD", "EUR", "GBP", "AED", "SGD"].map((c) => `<option ${(s.home_currency || "INR") === c ? "selected" : ""}>${c}</option>`).join("")}</select>`)}
+    ${row("Monthly budget", "Donna alerts you when subscriptions exceed it (0 = off)", inp("subs_budget", s.subs_budget, 'type="number" min="0" step="100"'))}
+    ${row("Card forex markup %", "Added to foreign-currency subscriptions (many Indian cards charge 3.5% + GST, about 4.1%)", inp("fx_markup_percent", s.fx_markup_percent, 'type="number" min="0" step="0.1"'))}
+    ${row("Watch email for subscriptions", "Daily check for receipts, trial sign-ups, price changes and AutoPay notices", sw("subs_email_watch", s.subs_email_watch))}
+    ${row("USD rate override", "Leave blank to use the daily market rate", `<input class="input" name="fx_usd" type="number" step="0.01" value="${(s.fx_manual || {}).USD || ""}" placeholder="auto">`)}
+    <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn primary" data-save>Save</button><button class="btn" id="fxRefresh">${icon("refresh")}Refresh exchange rates</button><a class="btn" href="#/subscriptions">${icon("card")}Open Subscriptions</a></div></section>
 
   <section class="card s-section" id="s-google" data-form><h2>Google Calendar</h2><p class="desc">Let Donna read your calendar, block time and book appointments. Your OAuth credentials stay on this machine.</p>
     ${s.google_connected ? `<div style="display:flex;align-items:center;gap:12px;margin-bottom:16px"><span class="status-pill on"><i></i>Connected${s.google_account ? " · " + esc(s.google_account) : ""}</span><button class="btn sm" id="gDisconnect">Disconnect</button></div>` : ""}
@@ -1227,11 +1240,13 @@ VIEWS.settings = async (el, r) => {
   $$("[data-save]", el).forEach((b) => (b.onclick = async () => {
     const sec = b.closest("[data-form]");
     const f = formData(sec);
-    for (const k of ["smtp_port", "event_reminder_min", "default_event_minutes", "llm_num_ctx", "vault_autolock_min", "inbox_interval_hours", "inbox_days", "review_day", "prep_lead_min", "birthday_remind_days", "nudge_weekday"]) if (k in f) f[k] = +f[k];
+    if ("fx_usd" in f) { f.fx_manual = f.fx_usd ? { USD: +f.fx_usd } : {}; delete f.fx_usd; }
+    for (const k of ["subs_budget", "fx_markup_percent", "smtp_port", "event_reminder_min", "default_event_minutes", "llm_num_ctx", "vault_autolock_min", "inbox_interval_hours", "inbox_days", "review_day", "prep_lead_min", "birthday_remind_days", "nudge_weekday"]) if (k in f) f[k] = +f[k];
     if ("llm_temperature" in f) f.llm_temperature = +f.llm_temperature;
     try { await PUT("/api/settings", f); toast("Saved"); await refreshBoot(); if (["s-ai", "s-google", "s-phone"].includes(sec.id)) render(); } catch (e) { fail(e); }
   }));
   bindSettingsV2(el, s);
+  $("#fxRefresh") && ($("#fxRefresh").onclick = async () => { try { const r = await POST("/api/subs/fx/refresh"); toast(Object.entries(r.rates).filter(([k]) => k !== (s.home_currency || "INR")).map(([k, v]) => `1 ${k} = ${(+v).toFixed(2)}`).join(" · ") || "Rates refreshed"); } catch (e) { fail(e); } });
   $("#restoreFile").onchange = async (e) => {
     const f = e.target.files[0]; if (!f) return;
     if (!(await confirmBox(`Replace ALL of Donna's current data with “${f.name}”? Current files are kept aside on the server, but this Donna will show the backup's data from now on.`, "Restore"))) { e.target.value = ""; return; }

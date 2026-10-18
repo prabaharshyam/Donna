@@ -90,6 +90,8 @@ def briefing_html(d=None):
     block("Birthdays", [f"🎂 {html.escape(p['name'])} · {'today' if p['in_days'] == 0 else 'in ' + str(p['in_days']) + ' days'}{' (turning ' + str(p['turning']) + ')' if p.get('turning') else ''}" for p in b.get("birthdays", [])])
     block("Renewals & bills", [f"{html.escape(r['title'])} · {'due today' if r['days_left'] == 0 else ('overdue' if r['days_left'] < 0 else 'in ' + str(r['days_left']) + ' days')}" for r in b.get("renewals_due", [])])
     block("Reach out", [f"{html.escape(p['name'])} · {str(p['days_since_contact']) + ' days since you spoke' if p['days_since_contact'] is not None else 'not logged yet'}" for p in b.get("reach_out", [])])
+    block("Free trials ending", [f"⏳ {html.escape(t['name'])} · cancel by {t['cancel_by']}" for t in b.get("trials_ending", [])])
+    block("Subscriptions charging soon", [f"💳 {html.escape(x['name'])} · {html.escape(x['charges'])} {'today' if x['in_days'] == 0 else 'in ' + str(x['in_days']) + ' days'}" for x in b.get("subscriptions_due", [])])
     if b.get("inbox_commitments_pending"):
         block("From your email", [f"{b['inbox_commitments_pending']} commitments waiting in Inbox"])
     name = db.get_setting("user_name", "")
@@ -254,6 +256,91 @@ def weekly_review():
     _background("review", work)
 
 
+DEFAULT_SUB_REMINDERS = {"trial": [3, 1, 0], "weekly": [1], "monthly": [2], "quarterly": [7, 2], "half-yearly": [7, 2], "yearly": [14, 3, 1]}
+
+
+def _sub_days(s, kind):
+    if s.get("reminder_days"):
+        try:
+            return [int(x) for x in str(s["reminder_days"]).replace(" ", "").split(",") if x != ""]
+        except ValueError:
+            pass
+    return DEFAULT_SUB_REMINDERS["trial" if kind == "trial" else (s.get("cycle") or "monthly")]
+
+
+def subscription_alerts():
+    """Trials, upcoming charges, auto-logging, cancellations, budget. Cheap: DB only."""
+    from . import subs
+    if datetime.now().strftime("%H:%M") < db.get_setting("briefing_time", "07:30"):
+        return  # alerts go out from the morning onwards, not at midnight
+    today = date.today().isoformat()
+    money = subs.fmt_money
+    for s in subs.subs("all"):
+        sid, name = s["id"], s["name"]
+        price = money(s["amount"], s["currency"]) if s["amount"] is not None else "the full price"
+        if s["status"] == "trial" and s["trial_end_date"]:
+            d = s["days_to_trial_end"]
+            if d is not None and d >= 0 and d in _sub_days(s, "trial") and _once(f"subtrial:{sid}:{s['trial_end_date']}:{d}"):
+                when = "today" if d == 0 else "tomorrow" if d == 1 else f"in {d} days"
+                title = f"⏳ {name} trial ends {when}"
+                body = (f"Cancel by {subs.date.fromisoformat(s['cancel_by']).strftime('%a %d %b')} or you'll be charged {price}"
+                        f"{' per ' + s['cycle'].replace('ly', '') if s['amount'] is not None else ''}.")
+                S.notify(title, body, "#/subscriptions")
+                _email(title, f"<p><b>{html.escape(name)}</b>: {html.escape(body)}</p>"
+                              + (f"<p><a style='color:#7a2e3a' href='{html.escape(s['manage_url'])}'>Manage or cancel</a></p>" if s["manage_url"] else "")
+                              + "<p style='color:#8a837a;font-size:13px'>Already cancelled? Mark it in Donna so the reminders stop.</p>")
+            elif d is not None and d < 0:
+                if s["auto_renew"]:
+                    subs.record_charge(sid, s["amount"], s["trial_end_date"], source="auto", note="Trial converted to paid")
+                    subs.save(sid, status="active")
+                    if _once(f"subconverted:{sid}:{s['trial_end_date']}"):
+                        S.notify(f"{name} trial is now paid", f"Charged {price}. If you meant to cancel, cancel now and ask support for a refund.", "#/subscriptions")
+                else:
+                    subs.save(sid, status="cancelled")
+        elif s["status"] == "active" and s["next_billing_date"]:
+            d = s["days_to_billing"]
+            if d is not None and d > 0 and d in _sub_days(s, "renewal") and _once(f"subrenew:{sid}:{s['next_billing_date']}:{d}"):
+                when = "tomorrow" if d == 1 else f"in {d} days"
+                S.notify(f"💳 {name} renews {when}", f"{price}" + (f" · {s['payment_method']}" if s["payment_method"] else ""), "#/subscriptions")
+                if (s["cycle"] in ("yearly", "half-yearly", "quarterly")) or d <= 1:
+                    _email(f"{name} renews {when}: {price}",
+                           f"<p><b>{html.escape(name)}</b> will charge <b>{html.escape(price)}</b> {when} ({html.escape(s['next_billing_date'])}).</p>"
+                           "<p style='color:#8a837a;font-size:13px'>Don't need it any more? Cancel before the date, and revoke the AutoPay/e-mandate too.</p>")
+            elif d is not None and d <= 0 and s["auto_renew"]:
+                # renewal day has come: log the expected charge (marked "auto") and roll the date forward
+                if not db.row("SELECT 1 FROM sub_charges WHERE sub_id=? AND ABS(julianday(date)-julianday(?))<=5", (sid, s["next_billing_date"])):
+                    subs.record_charge(sid, s["amount"], s["next_billing_date"], source="auto", note="Expected renewal")
+                else:
+                    nb = s["next_billing_date"]
+                    while nb <= today:
+                        nb = subs.advance(nb, s["cycle"])
+                    subs.save(sid, next_billing_date=nb)
+        elif s["status"] == "cancelling" and s["cancel_effective_date"] and s["cancel_effective_date"] < today:
+            subs.save(sid, status="cancelled")
+        if s["status"] in ("cancelling", "cancelled") and not s["checklist"].get("mandate", True) and _once(f"submandate:{sid}"):
+            S.notify(f"Revoke the AutoPay for {name}", "Cancelling the service doesn't always stop the UPI/card mandate. Revoke it in your UPI or bank app.", "#/subscriptions")
+    a = subs.analytics()
+    if a["over_budget"] and _once(f"subbudget:{today[:7]}"):
+        S.notify("Subscriptions are over budget", f"{money(a['monthly'])}/month vs budget {money(a['budget'])}", "#/subscriptions")
+
+
+def subscription_background():
+    """Daily: refresh exchange rates; check the last few days of email for receipts/trials."""
+    from . import inbox, subs, subs_email
+    if _once(f"fx:{date.today().isoformat()}"):
+        _background("fx", subs.refresh_fx)
+    if db.get_setting("subs_email_watch", True) and inbox.configured() and not db.get_setting("inbox_enabled", False) \
+            and datetime.now().hour >= 9 and _once(f"subemail:{date.today().isoformat()}"):
+        _background("subscan", lambda: _safe(subs_email.scan, 3, 60))
+
+
+def _safe(fn, *a):
+    try:
+        fn(*a)
+    except Exception as e:
+        log.warning("%s failed: %s", getattr(fn, "__name__", fn), e)
+
+
 def mentor_note():
     """Donna's daily mentor note, written at briefing time and pushed to phone."""
     if not db.get_setting("mentor_enabled", True):
@@ -290,7 +377,8 @@ def inbox_scan():
 def loop():
     while True:
         for job in (task_reminders, event_reminders, daily_briefing, journal_nudge, meeting_prep, renewal_alerts,
-                    people_nudges, weekly_review, inbox_scan, mentor_note, reflection_nudge):
+                    people_nudges, weekly_review, inbox_scan, mentor_note, reflection_nudge,
+                    subscription_alerts, subscription_background):
             try:
                 job()
             except Exception as e:

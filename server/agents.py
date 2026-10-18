@@ -12,9 +12,10 @@ from pathlib import Path
 from . import calendar_svc as cal
 from . import db, docs as D, life as L, llm, secure, services as S
 from . import timeparse as TP
+from . import subs as SUBS
 
 SKILLS_DIR = Path(__file__).parent / "skills"
-AGENTS = ["tasks", "calendar", "journal", "ideas", "memory", "people", "goals", "renewals", "briefing", "general"]
+AGENTS = ["tasks", "calendar", "journal", "ideas", "memory", "people", "goals", "subscriptions", "renewals", "briefing", "general"]
 
 
 def skill(name):
@@ -294,6 +295,11 @@ def _hydrate(h):
     if k == "renewal":
         r = db.row("SELECT title, category, due_date, amount, currency, cycle FROM renewals WHERE id=?", (rid,))
         return r and {"type": "renewal", **{x: y for x, y in r.items() if y not in (None, "")}}
+    if k == "subscription":
+        s = SUBS.get(rid)
+        return s and {"type": "subscription", "name": s["name"], "status": s["status"],
+                      "price": f"{SUBS.fmt_money(s['amount'], s['currency'])}/{s['cycle']}" if s["amount"] is not None else "unknown",
+                      "next": s["next_billing_date"], "trial_end": s["trial_end_date"]}
     if k == "doc":
         c = db.row("SELECT c.text, d.title FROM doc_chunks c JOIN documents d ON d.id=c.doc_id WHERE c.id=?", (rid,))
         return c and {"type": "document", "title": c["title"], "excerpt": c["text"][:600]}
@@ -342,6 +348,10 @@ def t_get_briefing(date=None):
                                 "amount": r["amount"], "currency": r["currency"]} for r in L.renewals(days_ahead=7)]
         out["reach_out"] = [{"name": p["name"], "days_since_contact": p["days_since_contact"]} for p in L.due_contacts()[:3]]
         out["inbox_commitments_pending"] = db.row("SELECT COUNT(*) n FROM inbox_items WHERE status='pending'")["n"]
+        a = SUBS.analytics()
+        out["subscriptions_due"] = [{"name": u["name"], "charges": SUBS.fmt_money(u["amount"], u["currency"]), "in_days": u["days"]}
+                                    for u in a["upcoming"] if u["days"] <= 3 and u["status"] == "active"]
+        out["trials_ending"] = [{"name": t["name"], "cancel_by": t["cancel_by"], "in_days": t["days"]} for t in a["trials"] if t["days"] is not None and t["days"] <= 7]
     return out
 
 
@@ -532,7 +542,10 @@ def t_list_renewals(days_ahead=None):
                        "amount": r["amount"], "currency": r["currency"], "cycle": r["cycle"]} for r in rs[:30]]}
 
 
-def t_add_renewal(title, due_date, category="subscription", amount=None, currency=None, cycle=None, remind_days=None, notes=None):
+def t_add_renewal(title, due_date, category="other", amount=None, currency=None, cycle=None, remind_days=None, notes=None):
+    if category == "subscription":  # app/service subscriptions live in the Subscription manager
+        return t_add_subscription(title, amount=amount, currency=currency, cycle=cycle or "monthly",
+                                  next_billing_date=due_date, notes=notes)
     cat = category if category in L.RENEWAL_CATEGORIES else "other"
     if remind_days is None:
         remind_days = 30 if cat in ("document", "insurance") else 3 if cat in ("subscription", "bill") else 7
@@ -555,6 +568,117 @@ def t_mark_renewed(title, new_due_date=None):
 def t_search_documents(query):
     hits = D.search(query, 4)
     return {"results": hits} if hits else {"results": [], "note": "No uploaded document mentions that."}
+
+
+# ---------- subscriptions ----------
+def _sub_brief(s):
+    out = {"name": s["name"], "status": s["status"], "category": s["category"]}
+    if s["plan"]:
+        out["plan"] = s["plan"]
+    out["price"] = f"{SUBS.fmt_money(s['amount'], s['currency'])} per {SUBS.PER.get(s['cycle'], 'month')}" if s["amount"] is not None else "amount not set"
+    if s["monthly_home"] is not None and s["currency"] != SUBS.home_currency():
+        out["approx_monthly_home"] = SUBS.fmt_money(s["monthly_home"])
+    if s["status"] == "trial" and s["trial_end_date"]:
+        out["trial_ends_say"] = TP.human(s["trial_end_date"])
+        out["cancel_by_say"] = TP.human(s["cancel_by"])
+    elif s["next_billing_date"] and s["status"] in ("active", "cancelling"):
+        out["next_charge_say" if s["status"] == "active" else "access_until_say"] = TP.human(s["next_billing_date"] if s["status"] == "active" else (s["cancel_effective_date"] or s["next_billing_date"]))
+    for k in ("payment_method", "billed_via", "shared_with", "value_rating"):
+        if s.get(k):
+            out[k] = s[k]
+    if s.get("unused_days") is not None:
+        out["last_used_days_ago"] = s["unused_days"]
+    pending = [k for k, v in s["checklist"].items() if not v]
+    if s["status"] in ("cancelling", "cancelled") and pending:
+        out["cancellation_steps_left"] = pending
+    return out
+
+
+def t_list_subscriptions(status="live"):
+    status = status if status in ("live", "all", *SUBS.STATUSES) else "live"
+    items = SUBS.subs(status)
+    a = SUBS.analytics()
+    return {"subscriptions": [_sub_brief(s) for s in items[:40]], "monthly_total": SUBS.fmt_money(a["monthly"]),
+            "yearly_total": SUBS.fmt_money(a["yearly"])}
+
+
+def t_add_subscription(name, amount=None, currency=None, cycle="monthly", next_billing_date=None, trial_end_date=None,
+                       category=None, plan=None, payment_method=None, billed_via=None, shared_with=None,
+                       my_share_percent=None, notes=None, start_date=None):
+    existing = SUBS.find(name)
+    f = {k: v for k, v in dict(amount=amount, currency=currency, cycle=cycle, next_billing_date=next_billing_date,
+                                trial_end_date=trial_end_date, category=category, plan=plan, payment_method=payment_method,
+                                billed_via=billed_via, shared_with=shared_with, my_share=my_share_percent, notes=notes,
+                                start_date=start_date).items() if v not in (None, "")}
+    if trial_end_date:
+        f.update(status="trial", next_billing_date=trial_end_date)
+    if existing and existing["status"] not in ("cancelled", "expired"):
+        s = SUBS.save(existing["id"], **f)
+        return {"updated_existing": _sub_brief(s)}
+    s = SUBS.save(name=name.strip(), **f)
+    out = {"added": _sub_brief(s)}
+    if s["status"] == "trial":
+        out["reminders"] = "Donna will remind the user 3 days before, 1 day before and on the morning of the cancel-by date."
+    return out
+
+
+def t_update_subscription(name, new_name=None, amount=None, currency=None, cycle=None, next_billing_date=None,
+                          trial_end_date=None, category=None, plan=None, payment_method=None, billed_via=None,
+                          shared_with=None, my_share_percent=None, value_rating=None, last_used=None, notes=None, status=None):
+    s = SUBS.find(name)
+    if not s:
+        return {"error": f"No subscription called '{name}'.", "known": [x["name"] for x in SUBS.subs("all")][:30]}
+    f = {k: v for k, v in dict(name=new_name, amount=amount, currency=currency, cycle=cycle, next_billing_date=next_billing_date,
+                                trial_end_date=trial_end_date, category=category, plan=plan, payment_method=payment_method,
+                                billed_via=billed_via, shared_with=shared_with, my_share=my_share_percent,
+                                value_rating=value_rating, last_used=last_used, notes=notes,
+                                status=status if status in ("active", "paused") else None).items() if v not in (None, "")}
+    if amount not in (None, "") and s["amount"] is not None and float(amount) != s["amount"]:
+        f["previous_amount"] = s["amount"]
+    return {"updated": _sub_brief(SUBS.save(s["id"], **f))}
+
+
+def t_cancel_subscription(name, effective_date=None, reason=None, already_cancelled_in_app=False):
+    s = SUBS.find(name)
+    if not s:
+        return {"error": f"No subscription called '{name}'."}
+    s = SUBS.cancel(s["id"], effective_date, reason or "")
+    if already_cancelled_in_app:
+        ck = s["checklist"]
+        ck["service"] = True
+        s = SUBS.save(s["id"], cancel_checklist=ck)
+    out = {"cancelled": _sub_brief(s), "steps_left": [k for k, v in s["checklist"].items() if not v],
+           "step_meanings": {"service": "cancel inside the app/website (or App Store/Play Store)",
+                             "mandate": "revoke the UPI AutoPay / card e-mandate so no further debit happens",
+                             "confirmation": "keep the cancellation confirmation email or screenshot"}}
+    if s.get("manage_url"):
+        out["manage_page"] = s["manage_url"]
+    return out
+
+
+def t_record_subscription_charge(name, amount=None, date=None, currency=None):
+    s = SUBS.find(name)
+    if not s:
+        return {"error": f"No subscription called '{name}'. Add it first with add_subscription."}
+    r = SUBS.record_charge(s["id"], amount, date, source="manual", currency=currency)
+    s = SUBS.get(s["id"])
+    out = {"logged": not r["duplicate"], "subscription": _sub_brief(s)}
+    if r["price_change"]:
+        out["price_change"] = f"{SUBS.fmt_money(r['price_change'][0], s['currency'])} → {SUBS.fmt_money(r['price_change'][1], s['currency'])}"
+    return out
+
+
+def t_subscription_spend():
+    return {"facts": SUBS.facts(), "rule": "Use only these facts and money strings."}
+
+
+def t_subscription_suggestions():
+    from . import subs_email
+    items = subs_email.suggestions()
+    return {"found_in_email_waiting_for_review": [{"service": i["service"], "event": i["event"],
+                                                   "amount": SUBS.fmt_money(i["amount"], i["currency"]) if i["amount"] else None,
+                                                   "date": i["date"], "trial_end": i["trial_end"]} for i in items[:20]],
+            "note": "The user accepts or dismisses these on the Subscriptions page."}
 
 
 # ---------- review / inbox ----------
@@ -690,6 +814,31 @@ TOOLS = {
     # review / inbox
     "week_review": (t_week_review, fn("week_review", "Stats for this week: completed, slipped, moods, goals moved, people contacted, ideas.")),
     "inbox_commitments": (t_inbox_commitments, fn("inbox_commitments", "Commitments and requests Donna found in the user's email, awaiting review.")),
+    "list_subscriptions": (t_list_subscriptions, fn("list_subscriptions", "The user's subscriptions with price, next charge / trial end and totals.", {
+        "status": {"type": "string", "enum": ["live", "all", "trial", "active", "cancelling", "cancelled", "paused"], "description": "live = trials + active + cancelling (default)"}})),
+    "add_subscription": (t_add_subscription, fn("add_subscription", "Add a subscription or free trial (updates it if it already exists).", {
+        "name": {"type": "string", "description": "Service name, e.g. Netflix, ChatGPT Plus, iCloud+"},
+        "amount": {"type": "number", "description": "Price per cycle (after the trial, for trials)"},
+        "currency": {"type": "string", "description": "ISO code; INR unless stated"},
+        "cycle": {"type": "string", "enum": SUBS.CYCLES}, "next_billing_date": DATE,
+        "trial_end_date": {"type": "string", "description": "YYYY-MM-DD when the free trial ends (first charge)"},
+        "category": {"type": "string", "enum": SUBS.CATEGORIES}, "plan": STR,
+        "payment_method": {"type": "string", "description": "Label only, e.g. 'HDFC credit card' or 'UPI AutoPay (GPay)'"},
+        "billed_via": {"type": "string", "description": "direct, App Store, Google Play, Amazon, or a telecom/card bundle"},
+        "shared_with": STR, "my_share_percent": {"type": "number"}, "notes": STR, "start_date": DATE}, ["name"])),
+    "update_subscription": (t_update_subscription, fn("update_subscription", "Change details of a subscription (price, dates, rating, last used…).", {
+        "name": STR, "new_name": STR, "amount": {"type": "number"}, "currency": STR, "cycle": {"type": "string", "enum": SUBS.CYCLES},
+        "next_billing_date": DATE, "trial_end_date": DATE, "category": {"type": "string", "enum": SUBS.CATEGORIES}, "plan": STR,
+        "payment_method": STR, "billed_via": STR, "shared_with": STR, "my_share_percent": {"type": "number"},
+        "value_rating": {"type": "integer", "description": "1-5 how worth it the user finds it"}, "last_used": DATE, "notes": STR,
+        "status": {"type": "string", "enum": ["active", "paused"]}}, ["name"])),
+    "cancel_subscription": (t_cancel_subscription, fn("cancel_subscription", "Mark a subscription as cancelled/cancelling and get the remaining cancellation steps.", {
+        "name": STR, "effective_date": {"type": "string", "description": "YYYY-MM-DD access ends; default = end of the current period"},
+        "reason": STR, "already_cancelled_in_app": {"type": "boolean"}}, ["name"])),
+    "record_subscription_charge": (t_record_subscription_charge, fn("record_subscription_charge", "Log that a subscription charged the user.", {
+        "name": STR, "amount": {"type": "number"}, "date": DATE, "currency": STR}, ["name"])),
+    "subscription_spend": (t_subscription_spend, fn("subscription_spend", "Totals, every subscription's cost, trials, unused/low-value items, budget.")),
+    "subscription_suggestions": (t_subscription_suggestions, fn("subscription_suggestions", "Subscriptions Donna detected in the user's email awaiting review.")),
     "send_to_phone": (t_send_to_phone, fn("send_to_phone", "Send a message to the user's phone via Telegram RIGHT NOW (only when they ask to send/push something now).", {
         "message": {"type": "string", "description": "Short message, e.g. 'Reminder: complete the Donna Bot by 11:59 PM today'"}}, ["message"])),
 }
@@ -702,6 +851,8 @@ AGENT_TOOLS = {
     "memory": ["remember", "recall", "vault_lookup", "search_documents"],
     "people": ["find_person", "save_person", "log_interaction", "people_to_contact", "add_task"],
     "goals": ["list_goals", "save_goal", "add_goal_task", "complete_milestone", "reflect_on_goal", "achieve_goal", "let_go_goal", "add_milestone"],
+    "subscriptions": ["list_subscriptions", "add_subscription", "update_subscription", "cancel_subscription",
+                      "record_subscription_charge", "subscription_spend", "subscription_suggestions"],
     "renewals": ["list_renewals", "add_renewal", "mark_renewed", "search_documents"],
     "briefing": ["get_briefing", "get_events", "list_tasks", "week_review", "inbox_commitments"],
     "general": ["recall", "remember", "get_briefing", "search_documents", "send_to_phone"],
@@ -716,7 +867,8 @@ ROUTES = {
     "memory": r"\b(remember|my .{0,20}(number|address|size|password|pin|card|passport|license|account|ifsc|email|phone|allerg)|what('s| is) my|prefer|preference|wish|wishlist|password|credit card|debit card|login|credentials|documents?|pdf|uploaded|warranty)\b",
     "people": r"\b(birthday|birthdays|catch ?up|caught up|spoke (to|with)|talked (to|with)|met (with|up)|haven'?t (talked|called|spoken|seen)|reach out|keep in touch|who should i (call|text|message)|people|contacts?|kids'? names?|who is)\b",
     "goals": r"\b(goal|goals|milestone|milestones|objective|resolution|progress on|working towards|reflection|mentor|motivat\w*|on track|achieved|achieve|level up|streak|xp)\b",
-    "renewals": r"\b(renew|renewal|renewals|expire|expires|expiry|expiring|subscription|subscriptions|bill|bills|premium|insurance|emi|due for payment|recharge|membership)\b",
+    "subscriptions": r"\b(subscri\w*|free trial|trial|autopay|auto-?pay|mandate|netflix|prime video|amazon prime|hotstar|jiohotstar|sonyliv|zee5|spotify|youtube premium|apple music|apple one|icloud\+?|google one|chatgpt|claude pro|gemini|perplexity|copilot|cursor|canva|adobe|notion|microsoft 365|office 365|linkedin premium|kindle unlimited|audible|swiggy one|zomato gold|uber one|cult\.?fit|duolingo|game pass|playstation plus|recurring|paying for)\b",
+    "renewals": r"\b(renew|renewal|renewals|expire|expires|expiry|expiring|bill|bills|premium|insurance|emi|due for payment|recharge)\b",
     "briefing": r"\b(brief|briefing|my day look|agenda|what('s| is) on|plan my (day|week)|today look|morning|week ahead|what do i have|weekly review|review my week|my week go|inbox|commitments)\b",
 }
 
@@ -822,7 +974,7 @@ CLAIMS_ACTION = re.compile(
     r"|\b(added|updated|booked|scheduled|changed|moved|created|saved|sent|logged)\b[^.]{0,40}\b(task|reminder|event|appointment|list|calendar|telegram)", re.I)
 
 
-MUTATING = {"add_goal_task", "achieve_goal", "let_go_goal", "reflect_on_goal", "add_task", "update_task", "complete_task", "delete_task", "create_event", "delete_event", "write_journal",
+MUTATING = {"add_subscription", "update_subscription", "cancel_subscription", "record_subscription_charge", "add_goal_task", "achieve_goal", "let_go_goal", "reflect_on_goal", "add_task", "update_task", "complete_task", "delete_task", "create_event", "delete_event", "write_journal",
             "add_idea", "remember", "save_person", "log_interaction", "save_goal", "add_milestone", "complete_milestone",
             "add_renewal", "mark_renewed", "send_to_phone"}
 
@@ -840,11 +992,21 @@ def _summarise_result(name, result):
             elif t.get("due_say"):
                 bits.append(f"due {t['due_say']}")
             return f"{name}: " + ", ".join(bits)
+    for key in ("added", "updated", "updated_existing", "cancelled", "subscription"):
+        sub = result.get(key)
+        if isinstance(sub, dict) and "name" in sub and "status" in sub:
+            bits = [f"{key} subscription '{sub['name']}'", sub.get("price", ""), sub["status"]]
+            for k in ("payment_method", "billed_via", "shared_with", "next_charge_say", "trial_ends_say", "cancel_by_say", "access_until_say"):
+                if sub.get(k):
+                    bits.append(f"{k.replace('_say', '').replace('_', ' ')}: {sub[k]}")
+            if result.get("price_change"):
+                bits.append(f"price change {result['price_change']}")
+            return f"{name}: " + ", ".join(b for b in bits if b)
     if "created" in result and isinstance(result["created"], dict):
         e = result["created"]
         return f"{name}: '{e.get('title')}' {e.get('when_say', e.get('start', ''))}"
     s = json.dumps(result, ensure_ascii=False, default=str)
-    return f"{name}: {s[:160]}"
+    return f"{name}: {s[:300]}"
 
 
 def run(conversation_id: int, text: str, agent: str = None):
@@ -897,7 +1059,7 @@ def run(conversation_id: int, text: str, agent: str = None):
         if not msg.get("tool_calls"):
             final = msg["content"]
             # Guard: the model claimed to change something but called no tool this turn.
-            if not any(t["ok"] and t["tool"] in MUTATING for t in trace) and CLAIMS_ACTION.search(final or ""):
+            if not trace and CLAIMS_ACTION.search(final or ""):  # claimed an action without calling any tool at all
                 if not nudged and not fact_only:
                     nudged = True
                     messages.append({"role": "user", "content":

@@ -127,6 +127,28 @@ CREATE TABLE IF NOT EXISTS mentor_messages (
   id INTEGER PRIMARY KEY, date TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL,
   created_at TEXT DEFAULT (datetime('now','localtime')));
 
+CREATE TABLE IF NOT EXISTS subscriptions (
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL, plan TEXT DEFAULT '', category TEXT DEFAULT 'other',
+  amount REAL, currency TEXT DEFAULT 'INR', cycle TEXT DEFAULT 'monthly', next_billing_date TEXT,
+  start_date TEXT, status TEXT DEFAULT 'active', trial_end_date TEXT, auto_renew INTEGER DEFAULT 1,
+  payment_method TEXT DEFAULT '', billed_via TEXT DEFAULT '', account_email TEXT DEFAULT '',
+  shared_with TEXT DEFAULT '', my_share REAL DEFAULT 100, manage_url TEXT DEFAULT '', notes TEXT DEFAULT '',
+  value_rating INTEGER, last_used TEXT, reminder_days TEXT DEFAULT '', cancel_effective_date TEXT,
+  cancel_reason TEXT DEFAULT '', cancel_checklist TEXT DEFAULT '{}', cancelled_at TEXT, previous_amount REAL,
+  cancel_guide TEXT DEFAULT '', emoji TEXT DEFAULT '', color TEXT DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now','localtime')), updated_at TEXT);
+
+CREATE TABLE IF NOT EXISTS sub_charges (
+  id INTEGER PRIMARY KEY, sub_id INTEGER REFERENCES subscriptions(id) ON DELETE CASCADE,
+  date TEXT NOT NULL, amount REAL, currency TEXT DEFAULT 'INR', source TEXT DEFAULT 'manual', note TEXT DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now','localtime')));
+
+CREATE TABLE IF NOT EXISTS sub_suggestions (
+  id INTEGER PRIMARY KEY, msg_id TEXT, service TEXT NOT NULL, event TEXT, amount REAL, currency TEXT,
+  date TEXT, next_date TEXT, trial_end TEXT, cycle TEXT, plan TEXT DEFAULT '', sender TEXT DEFAULT '',
+  subject TEXT DEFAULT '', evidence TEXT DEFAULT '', status TEXT DEFAULT 'pending', sub_id INTEGER,
+  created_at TEXT DEFAULT (datetime('now','localtime')));
+
 CREATE VIRTUAL TABLE IF NOT EXISTS search_idx USING fts5(kind, ref_id UNINDEXED, title, body, tokenize='porter unicode61');
 """
 

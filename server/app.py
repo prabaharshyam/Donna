@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 
 from . import agents, auth, backup, calendar_svc as cal, db, docs as D, inbox, life as L, llm, mailer, review, scheduler, secure, \
-    services as S, telegram, timeparse, gamify, mentor
+    services as S, telegram, timeparse, gamify, mentor, subs as SUBS, subs_email
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 WEB = Path(__file__).resolve().parent.parent / "web"
@@ -107,7 +107,9 @@ def bootstrap():
         "email": mailer.configured(), "streak": S.journal_streak(), "theme": db.get_setting("theme", "system"),
         "onboarded": bool(db.get_setting("onboarded", False)),
         "inbox_pending": db.row("SELECT COUNT(*) n FROM inbox_items WHERE status='pending'")["n"],
-        "renewals_soon": len(L.renewals(days_ahead=7)), "birthdays_soon": len(L.upcoming_birthdays(7)),
+        "renewals_soon": len(L.renewals(days_ahead=7)),
+        "subs_alerts": sum(1 for t in SUBS.analytics()["trials"] if t["days"] is not None and t["days"] <= 3)
+                       + db.row("SELECT COUNT(*) n FROM sub_suggestions WHERE status='pending'")["n"], "birthdays_soon": len(L.upcoming_birthdays(7)),
         "telegram": bool(db.get_setting("telegram_chat_id")), "auth": auth.enabled(),
     }
 
@@ -470,7 +472,8 @@ PUBLIC_SETTINGS = {
     "imap_host": "", "inbox_enabled": False, "inbox_interval_hours": 3, "inbox_days": 2, "inbox_scan_sent": True,
     "review_enabled": True, "review_day": 6, "review_time": "18:00", "prep_enabled": True, "prep_lead_min": 30,
     "prep_ai": True, "birthday_remind_days": 7, "nudge_weekday": 5, "telegram_notify": True, "allowed_hosts": "",
-    "timezone": "Asia/Kolkata", "mentor_enabled": True, "reflection_nudge_time": "20:30",
+    "timezone": "Asia/Kolkata", "mentor_enabled": True, "home_currency": "INR", "subs_budget": 0,
+    "fx_markup_percent": 0, "subs_email_watch": True, "fx_manual": {}, "reflection_nudge_time": "20:30",
 }
 SECRET_SETTINGS = {"smtp_password", "google_client_secret", "telegram_token", "anthropic_api_key"}
 
@@ -494,6 +497,9 @@ def settings_put(b: dict = Body(...)):
             secure.set_secret(k, v)
     if {"llm_provider", "claude_model", "anthropic_api_key", "ollama_url", "ollama_model"} & b.keys():
         llm.reset_status()
+    if {"fx_manual", "home_currency"} & b.keys():
+        import threading
+        threading.Thread(target=SUBS.refresh_fx, kwargs={"force": True}, daemon=True).start()
     if b.get("timezone"):
         timeparse.apply_timezone(b["timezone"])
     if b.get("telegram_token"):
@@ -753,6 +759,122 @@ def mentor_today():
 def mentor_regenerate():
     mentor.generate_daily_async(force=True)
     return {"generating": True}
+
+
+# ---------------- Subscriptions ----------------
+@app.get("/api/subs")
+def subs_list(status: str = "all"):
+    return {"items": SUBS.subs(status), "analytics": SUBS.analytics(), "suggestions": subs_email.suggestions(),
+            "categories": SUBS.CATEGORIES, "cycles": SUBS.CYCLES, "scan": db.get_setting("subscan_status", {}) or {},
+            "email_configured": inbox.configured(), "last_audit": db.get_setting("subs_last_audit", None)}
+
+
+@app.get("/api/subs/catalog")
+def subs_catalog():
+    return [{"name": n, "category": c, "emoji": e, "manage_url": u} for n, c, e, u in SUBS.CATALOG]
+
+
+@app.get("/api/subs/{sid}")
+def sub_get(sid: int):
+    return _404(SUBS.get(sid))
+
+
+@app.post("/api/subs")
+def sub_create(b: dict = Body(...)):
+    if not (b.get("name") or "").strip():
+        raise HTTPException(400, "Name required")
+    return SUBS.save(**b)
+
+
+@app.patch("/api/subs/{sid}")
+def sub_update(sid: int, b: dict = Body(...)):
+    s = _404(SUBS.get(sid))
+    if "amount" in b and b["amount"] not in ("", None) and s["amount"] is not None and float(b["amount"]) != s["amount"]:
+        b["previous_amount"] = s["amount"]
+    return SUBS.save(sid, **b)
+
+
+@app.delete("/api/subs/{sid}")
+def sub_delete(sid: int):
+    SUBS.delete(sid)
+    return {"ok": True}
+
+
+@app.post("/api/subs/{sid}/charge")
+def sub_charge(sid: int, b: dict = Body(default={})):
+    _404(SUBS.get(sid))
+    b = b or {}
+    r = SUBS.record_charge(sid, b.get("amount"), b.get("date"), source="manual", note=b.get("note", ""), currency=b.get("currency"))
+    return {**r, "sub": SUBS.get(sid)}
+
+
+@app.delete("/api/sub_charges/{cid}")
+def sub_charge_delete(cid: int):
+    db.run("DELETE FROM sub_charges WHERE id=?", (cid,))
+    return {"ok": True}
+
+
+@app.post("/api/subs/{sid}/cancel")
+def sub_cancel(sid: int, b: dict = Body(default={})):
+    _404(SUBS.get(sid))
+    b = b or {}
+    return SUBS.cancel(sid, b.get("effective_date"), b.get("reason", ""))
+
+
+@app.post("/api/subs/{sid}/checklist")
+def sub_checklist(sid: int, b: dict = Body(...)):
+    s = _404(SUBS.get(sid))
+    ck = s["checklist"]
+    ck[b["key"]] = bool(b.get("done", True))
+    return SUBS.save(sid, cancel_checklist=ck)
+
+
+@app.post("/api/subs/{sid}/reactivate")
+def sub_reactivate(sid: int):
+    _404(SUBS.get(sid))
+    return SUBS.reactivate(sid)
+
+
+@app.post("/api/subs/{sid}/used")
+def sub_used(sid: int):
+    _404(SUBS.get(sid))
+    return SUBS.mark_used(sid)
+
+
+@app.post("/api/subs/{sid}/cancel-guide")
+def sub_cancel_guide(sid: int):
+    _404(SUBS.get(sid))
+    return {"text": SUBS.cancel_guide(sid)}
+
+
+@app.post("/api/subs/audit")
+def subs_audit():
+    return {"text": SUBS.audit(), "at": db.now()}
+
+
+@app.post("/api/subs/scan-email")
+def subs_scan(b: dict = Body(default={})):
+    if not inbox.configured():
+        raise HTTPException(400, "Set up email (SMTP host, username and app password) in Admin → Email first")
+    subs_email.scan_async(int((b or {}).get("days", 120)))
+    return {"started": True}
+
+
+@app.post("/api/subs/suggestions/{gid}/accept")
+def subs_suggestion_accept(gid: int, b: dict = Body(default={})):
+    return subs_email.accept(gid, b or {})
+
+
+@app.post("/api/subs/suggestions/{gid}/dismiss")
+def subs_suggestion_dismiss(gid: int):
+    subs_email.dismiss(gid)
+    return {"ok": True}
+
+
+@app.post("/api/subs/fx/refresh")
+def subs_fx_refresh():
+    return {"rates": {k: v for k, v in SUBS.refresh_fx(force=True).items() if k in ("USD", "EUR", "GBP", "AED", "SGD", SUBS.home_currency())},
+            "updated": db.get_setting("fx_updated", "")}
 
 
 # ---------------- Renewals ----------------

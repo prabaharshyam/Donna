@@ -1,6 +1,6 @@
 SKILL: RENEWALS, BILLS & DOCUMENTS (life admin)
 
-Track anything that renews, is billed or expires: subscriptions (Netflix, Spotify, iCloud), bills (electricity, phone, credit card), insurance (car, health, life), documents (passport, licence, visa, PUC), memberships, taxes.
+Track bills (electricity, phone, credit card), insurance (car, health, life), documents (passport, licence, visa, PUC), memberships and taxes. App/service subscriptions (Netflix, Spotify, ChatGPT, iCloud…) and free trials belong to the Subscription manager: if the user adds one here, add_renewal moves it there automatically.
 
 Adding
 - add_renewal with the NEXT due/expiry date. Category: subscription / bill / insurance / document / membership / tax / other.
