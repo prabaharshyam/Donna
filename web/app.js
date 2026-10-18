@@ -80,6 +80,9 @@ const ICONS = {
   volume: '<path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/>',
   gift: '<rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13M5 12v9h14v-9M12 8S10.5 3 8 3.5 7 8 12 8zm0 0s1.5-5 4-4.5S17 8 12 8z"/>',
   upload: '<path d="M12 15V3M7 8l5-5 5 5M4 21h16"/>',
+  sidebar: '<rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16M5.5 8h1M5.5 11h1"/>',
+  palette: '<path d="M12 22a10 10 0 1 1 10-10c0 2.8-2.2 4-4 4h-2.5a1.5 1.5 0 0 0-1 2.6A1.5 1.5 0 0 1 12 22z"/><circle cx="7.5" cy="11" r="1"/><circle cx="11" cy="7" r="1"/><circle cx="16" cy="8.5" r="1"/>',
+  keyboard: '<rect x="2" y="6" width="20" height="13" rx="2.5"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 15h10"/>',
   phone: '<rect x="6" y="2" width="12" height="20" rx="3"/><path d="M11 18h2"/>',
   flag: '<path d="M4 22V4M4 4h12l-2 4 2 4H4"/>',
 };
@@ -168,9 +171,16 @@ const formData = (root) => Object.fromEntries($$("[name]", root).map((i) => [i.n
 // ============================== State & boot ==============================
 const state = { boot: null, pendingAsk: null, chat: { cid: null }, tasks: { selected: null, showDone: true }, cal: { weekStart: null }, journal: { date: TODAY(), month: null }, ideas: { projectId: null, archived: false, q: "", color: "" }, notifSeen: new Set() };
 
-function applyTheme(t) {
+function applyTheme(t, accent) {
   const dark = t === "dark" || (t === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
   document.documentElement.dataset.theme = dark ? "dark" : "light";
+  if (accent !== undefined) {
+    if (accent && accent !== "wine") document.documentElement.dataset.accent = accent; else delete document.documentElement.dataset.accent;
+    try { localStorage.setItem("donna_accent", accent || "wine"); } catch { /* ignore */ }
+  }
+  try { localStorage.setItem("donna_theme", t || "system"); } catch { /* ignore */ }
+  const m = document.querySelector('meta[name="theme-color"]');
+  if (m) m.content = dark ? "#0F0D0C" : "#F7F4EF";
 }
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => applyTheme(state.boot?.theme || "system"));
 
@@ -188,7 +198,8 @@ async function refreshBoot() {
     <span title="${b.google.needs_reconnect ? "Google Calendar disconnected: reconnect in Admin" : b.google.connected ? "Google Calendar connected" : "Google Calendar not connected"}"><i class="${b.google.needs_reconnect ? "off" : b.google.connected ? "on" : ""}"></i>Calendar</span>
     <span title="Email reminders"><i class="${b.email ? "on" : ""}"></i>Email</span>`;
   GET("/api/ai/status").then((s) => { state.ai = s; const d = $("#aiDot"); if (d) { d.className = s.ok && s.model_installed ? "on" : "off"; d.parentElement.title = s.ok ? `AI: ${s.display_name || s.model}` : (s.error || "AI not connected"); } }).catch(() => {});
-  applyTheme(b.theme);
+  applyTheme(b.theme, b.accent);
+  if (window.updateShell) updateShell(b);
   return b;
 }
 
@@ -200,13 +211,27 @@ function parseHash() {
   const parts = path.split("/").filter(Boolean);
   return { route: parts[0] || "", parts, params: new URLSearchParams(qs || "") };
 }
+let renderSeq = 0;
 async function render() {
   const r = parseHash();
+  const seq = ++renderSeq;
   $$("#nav a, .foot-link").forEach((a) => a.classList.toggle("active", a.dataset.route === r.route));
+  $$("#tabbar [data-tab]").forEach((a) => a.classList.toggle("on", a.dataset.tab === r.route));
   $("#sidebar").classList.remove("open");
-  const main = $("#main");
+  if (window.setCrumb) setCrumb(r);
+  const host = $("#view");
   const view = VIEWS[r.route] || VIEWS[""];
-  try { await view(main, r); } catch (e) { console.error(e); main.innerHTML = `<div class="page"><div class="empty big"><h3>Something went wrong</h3><p>${esc(e.message)}</p></div></div>`; }
+  const sameView = host.dataset.route === r.route && host.children.length;
+  // show a shimmering placeholder only if loading takes a moment, so fast views don't flicker
+  const before = host.firstElementChild;
+  const skel = sameView ? null : setTimeout(() => { if (seq === renderSeq && host.firstElementChild === before && window.skeletonFor) host.innerHTML = skeletonFor(r.route); }, 140);
+  const paint = async () => {
+    try { await view(host, r); } catch (e) { console.error(e); host.innerHTML = `<div class="page"><div class="empty big">${icon("x")}<h3>Something went wrong</h3><p>${esc(e.message)}</p></div></div>`; }
+    clearTimeout(skel);
+    host.dataset.route = r.route;
+    if (!sameView) { host.classList.remove("view-enter"); void host.offsetWidth; host.classList.add("view-enter"); $("#main").scrollTop = 0; }
+  };
+  await paint();
 }
 window.addEventListener("hashchange", render);
 const go = (h) => { if (location.hash === h) render(); else location.hash = h; };
@@ -214,54 +239,79 @@ function askDonna(text) { state.pendingAsk = text; state.chat.cid = null; go("#/
 
 // ============================== TODAY ==============================
 VIEWS[""] = async (el) => {
-  const [brief, myday, ideas, jr] = await Promise.all([GET("/api/briefing"), GET("/api/tasks?view=myday"), GET("/api/ideas"), GET(`/api/journal/${TODAY()}`)]);
+  const [brief, myday, ideas, jr, goals] = await Promise.all([GET("/api/briefing"), GET("/api/tasks?view=myday"), GET("/api/ideas"), GET(`/api/journal/${TODAY()}`), GET("/api/goals?status=active").catch(() => [])]);
   const b = brief.data, name = state.boot.user_name;
-  const open = myday.filter((t) => !t.completed);
+  const open = myday.filter((t) => !t.completed), doneN = myday.length - open.length;
   const events = b.events.filter((e) => !e.error);
   const now = isoDT(new Date());
+  // up next: the next timed event today, else the next reminder
+  const nextEv = events.find((e) => !e.all_day && e.end > now);
+  const nextRem = open.filter((t) => t.reminder_at && t.reminder_at > now).sort((x, y) => x.reminder_at.localeCompare(y.reminder_at))[0];
+  const until = (iso) => { const m = Math.round((parseD(iso) - new Date()) / 60000); return m <= 0 ? "Now" : m < 60 ? `in ${m} min` : `in ${Math.floor(m / 60)} h${m % 60 ? " " + (m % 60) + " m" : ""}`; };
+  const upnext = nextEv ? { when: nextEv.start <= now ? "Happening now" : until(nextEv.start), title: nextEv.title, meta: `${fmtTime(nextEv.start)} – ${fmtTime(nextEv.end)}${nextEv.location ? " · " + nextEv.location : ""}`, icon: "calendar", href: "#/calendar" }
+    : nextRem ? { when: until(nextRem.reminder_at), title: nextRem.title, meta: `Reminder at ${fmtTime(nextRem.reminder_at)}`, icon: "bell", href: "#/tasks/myday" } : null;
   let nowPlaced = false;
   const agenda = events.map((e) => {
     let line = "";
-    if (!nowPlaced && !e.all_day && e.start > now) { nowPlaced = true; line = `<div class="now-line">NOW</div>`; }
-    return line + `<div class="agenda-item ${e.source} ${!e.all_day && e.end < now ? "past" : ""}"><div class="time">${e.all_day ? "All day" : fmtTime(e.start)}</div><div class="bar"></div><div><div class="t">${esc(e.title)}</div><div class="m">${e.all_day ? "" : fmtTime(e.start) + " – " + fmtTime(e.end)}${e.location ? " · " + esc(e.location) : ""}</div></div></div>`;
+    if (!nowPlaced && !e.all_day && e.start > now) { nowPlaced = true; line = `<div class="tl-now"><span>NOW</span><i></i></div>`; }
+    return line + `<div class="tl-item ${e.source} ${!e.all_day && e.end < now ? "past" : ""}"><div class="tl-time">${e.all_day ? "All day" : fmtTime(e.start)}</div><div class="tl-dot"></div><div style="min-width:0"><div class="t">${esc(e.title)}</div><div class="m">${e.all_day ? "All day" : fmtTime(e.start) + " – " + fmtTime(e.end)}${e.location ? " · " + esc(e.location) : ""}</div></div></div>`;
   }).join("");
+  const dayPct = myday.length ? Math.round(100 * doneN / myday.length) : 0;
+  const goalPct = goals.length ? Math.round(goals.reduce((s, g) => s + (g.progress || 0), 0) / goals.length) : 0;
+  const streak = b.journal_streak_days || 0;
+  const ring = (p, label, sub, val) => `<div class="ring" title="${esc(sub)}"><div class="r" style="--p:0" data-p="${Math.max(0, Math.min(100, p))}">${val}</div><small>${label}</small></div>`;
   const summary = [events.length ? `${events.length} ${events.length === 1 ? "event" : "events"}` : "a clear calendar", open.length ? `${open.length} ${open.length === 1 ? "task" : "tasks"} in focus` : "nothing pressing"].join(" and ");
+  const coming = [
+    ...(b.birthdays || []).map((p) => `<a class="chip accent" href="#/people">🎂 ${esc(p.name)} · ${p.in_days === 0 ? "today" : p.in_days === 1 ? "tomorrow" : "in " + p.in_days + " days"}${p.turning ? " · turning " + p.turning : ""}</a>`),
+    ...(b.trials_ending || []).map((t) => `<a class="chip ${t.in_days <= 2 ? "warn" : "accent"}" href="#/subscriptions">⏳ ${esc(t.name)} trial · cancel by ${fmtDate(t.cancel_by)}</a>`),
+    ...(b.subscriptions_due || []).map((x) => `<a class="chip" href="#/subscriptions">${icon("card")}${esc(x.name)} ${esc(x.charges)} · ${x.in_days === 0 ? "today" : "in " + x.in_days + "d"}</a>`),
+    ...(b.renewals_due || []).map((r) => `<a class="chip ${r.days_left < 0 ? "warn" : ""}" href="#/renewals">${icon("refresh")}${esc(r.title)} · ${r.days_left < 0 ? "overdue" : r.days_left === 0 ? "due today" : "in " + r.days_left + "d"}</a>`),
+    ...(b.reach_out || []).map((p) => `<a class="chip" href="#/people">${icon("users")}Reach out to ${esc(p.name)}</a>`),
+    ...(b.inbox_commitments_pending ? [`<a class="chip accent" href="#/inbox">${icon("mail")}${b.inbox_commitments_pending} from your email</a>`] : []),
+  ];
   el.innerHTML = `<div class="page">
-    <div class="hero">
-      <div class="eyebrow">${new Date().toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" })}</div>
-      <h1>${greeting()}${name ? `, <em>${esc(name)}</em>` : ""}.</h1>
-      <div class="muted" style="margin-top:8px;font-size:15px">You have ${summary}${b.overdue.length ? `, and <b style="color:var(--warn)">${b.overdue.length} overdue</b>` : ""}.</div>
-      <form class="ask-bar" id="askForm">${icon("sparkle")}<input id="askInput" placeholder="Tell Donna anything: “Remind me to call the bank at 4pm”, “Block Friday morning for the pitch”…" autocomplete="off"><button type="button" class="icon-btn mic" id="askMic" title="Speak">${icon("mic")}</button><button class="btn primary">Ask</button></form>
-      <div class="suggest">${["Brief me on today", "What's overdue?", "Block 2 hours tomorrow for deep work", "What did I write in my journal this week?"].map((s) => `<button class="chip btnlike" data-ask="${esc(s)}">${esc(s)}</button>`).join("")}</div>
+    <div class="hero2">
+      <div>
+        <span class="datechip"><i>${new Date().getHours() < 18 ? "☀️" : "🌙"}</i>${new Date().toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" })}</span>
+        <h1>${greeting()}${name ? `, <em>${esc(name)}</em>` : ""}.</h1>
+        <div class="lede">You have ${summary}${b.overdue.length ? `, and <b style="color:var(--warn)">${b.overdue.length} overdue</b>` : ""}.</div>
+      </div>
+      <div class="rings">
+        ${ring(dayPct, "My Day", `${doneN} of ${myday.length} done`, myday.length ? `${doneN}/${myday.length}` : "–")}
+        ${ring(goalPct, "Goals", `${goals.length} active goals`, goals.length ? `${goalPct}%` : "–")}
+        ${ring(Math.min(100, streak / 7 * 100), "Journal streak", `${streak} days`, `${streak}🔥`)}
+      </div>
     </div>
-    <div class="card mentor-card" id="mentorCard"></div>
-    <div class="card voice-card"><button class="play" id="playBrief" title="Play briefing">${icon("play")}</button>
-      <div style="flex:1"><b>Your briefing, read aloud</b><span class="muted" style="font-size:13px">About a minute. Then tap the mic and talk back: “add pick up dry cleaning”, “move the dentist to 5”.</span></div>
-      <button class="btn sm" id="talkBtn">${icon("mic")}Talk to Donna</button></div>
-    ${(b.birthdays?.length || b.renewals_due?.length || b.reach_out?.length || b.trials_ending?.length || b.subscriptions_due?.length) ? `<div class="card" style="margin-bottom:16px"><div class="card-head">${icon("gift")}<h3>Coming up</h3></div><div class="card-body" style="display:flex;flex-wrap:wrap;gap:8px">
-      ${(b.birthdays || []).map((p) => `<a class="chip accent" href="#/people">🎂 ${esc(p.name)} · ${p.in_days === 0 ? "today" : p.in_days === 1 ? "tomorrow" : "in " + p.in_days + " days"}${p.turning ? " · turning " + p.turning : ""}</a>`).join("")}
-      ${(b.trials_ending || []).map((t) => `<a class="chip ${t.in_days <= 2 ? "warn" : "accent"}" href="#/subscriptions">⏳ ${esc(t.name)} trial · cancel by ${fmtDate(t.cancel_by)}</a>`).join("")}
-      ${(b.subscriptions_due || []).map((x) => `<a class="chip" href="#/subscriptions">${icon("card")}${esc(x.name)} ${esc(x.charges)} · ${x.in_days === 0 ? "today" : "in " + x.in_days + "d"}</a>`).join("")}
-      ${(b.renewals_due || []).map((r) => `<a class="chip ${r.days_left < 0 ? "warn" : ""}" href="#/renewals">${icon("refresh")}${esc(r.title)} · ${r.days_left < 0 ? "overdue" : r.days_left === 0 ? "due today" : "in " + r.days_left + "d"}</a>`).join("")}
-      ${(b.reach_out || []).map((p) => `<a class="chip" href="#/people">${icon("users")}Reach out to ${esc(p.name)}</a>`).join("")}
-      ${b.inbox_commitments_pending ? `<a class="chip accent" href="#/inbox">${icon("mail")}${b.inbox_commitments_pending} from your email</a>` : ""}</div></div>` : ""}
-    <div class="stat-row">
-      <div class="card stat"><div class="eyebrow">Events today</div><div class="n">${events.length}</div></div>
-      <div class="card stat"><div class="eyebrow">In focus</div><div class="n">${open.length}</div></div>
-      <div class="card stat"><div class="eyebrow">Overdue</div><div class="n" style="${b.overdue.length ? "color:var(--warn)" : ""}">${b.overdue.length}</div></div>
-      <div class="card stat"><div class="eyebrow">Journal streak</div><div class="n">${b.journal_streak_days}<small>${b.journal_streak_days === 1 ? "day" : "days"}</small></div></div>
-    </div>
-    <div class="grid">
-      <div class="card col-7"><div class="card-head">${icon("calendar")}<h3>Schedule</h3><a class="more" href="#/calendar">Calendar →</a></div>
-        <div class="card-body">${agenda || `<div class="empty">Nothing on the calendar today. ${state.boot.google.connected ? "" : `<a href="#/settings" style="color:var(--accent)">Connect Google Calendar</a>`}</div>`}</div></div>
-      <div class="card col-5"><div class="card-head">${icon("sun")}<h3>My Day</h3><a class="more" href="#/tasks/myday">To Do →</a></div>
-        <div class="card-body" id="todayTasks"></div></div>
-      <div class="card col-7"><div class="card-head">${icon("bulb")}<h3>Recent ideas</h3><a class="more" href="#/ideas">All ideas →</a></div>
-        <div class="card-body">${ideas.slice(0, 4).map((i) => `<div class="agenda-item"><div class="bar" style="background:var(--gold)"></div><div style="min-width:0"><div class="t">${esc(i.title || i.body.slice(0, 60))}</div><div class="m">${esc(i.project_name || "Unsorted")} · ${esc(i.body.slice(0, 90))}</div></div></div>`).join("") || `<div class="empty">No ideas captured yet. Press ⌘K and type “idea: …”</div>`}</div></div>
-      <div class="card col-5"><div class="card-head">${icon("book")}<h3>Journal</h3><a class="more" href="#/journal">Open →</a></div>
-        <div class="card-body">${jr.body ? `<div style="font-family:Georgia,serif;font-size:15px;line-height:1.7;color:var(--ink-2)">${esc(jr.body.slice(0, 260))}${jr.body.length > 260 ? "…" : ""}</div>` : `<p class="muted" style="margin:6px 0 14px">You haven't written today. One honest line is enough.</p><a class="btn sm" href="#/journal">${icon("edit")}Write today's entry</a>`}</div></div>
+    <form class="ask2" id="askForm">${icon("sparkle")}<input id="askInput" placeholder="Tell Donna anything: “Remind me to call the bank at 4pm”, “Block Friday morning for the pitch”…" autocomplete="off"><button type="button" class="icon-btn mic" id="askMic" title="Speak">${icon("mic")}</button><button class="btn accent">Ask</button></form>
+    <div class="suggest" style="margin:-6px 0 22px">${["Brief me on today", "What's overdue?", "Block 2 hours tomorrow for deep work", "What did I write in my journal this week?"].map((s) => `<button class="chip btnlike" data-ask="${esc(s)}">${esc(s)}</button>`).join("")}</div>
+    <div class="bento">
+      <div class="b-8"><div class="card mentor-card" id="mentorCard" style="margin:0;height:100%"></div></div>
+      <div class="b-4" style="display:flex;flex-direction:column;gap:16px">
+        <a class="card upnext" href="${upnext?.href || "#/calendar"}" style="text-decoration:none;color:inherit">
+          <div class="eyebrow">${icon(upnext?.icon || "sun")} Up next</div>
+          ${upnext ? `<div class="un-when">${esc(upnext.when)}</div><div><div class="un-title">${esc(upnext.title)}</div><div class="muted" style="font-size:12.5px">${esc(upnext.meta)}</div></div>`
+            : `<div class="un-when">All clear</div><div class="muted" style="font-size:13px">Nothing else scheduled today.</div>`}
+        </a>
+        <div class="card voice-card" style="margin:0"><button class="play" id="playBrief" title="Play briefing">${icon("play")}</button>
+          <div style="flex:1;min-width:0"><b>Your briefing</b><span class="muted" style="font-size:12.5px">About a minute, read aloud.</span></div>
+          <button class="icon-btn" id="talkBtn" title="Talk to Donna">${icon("mic")}</button></div>
+        <div class="card" style="margin:0;flex:1"><div class="card-head">${icon("sun")}<h3>Focus</h3><a class="more" href="#/tasks/myday">To Do →</a></div>
+          <div class="card-body" id="todayTasks"></div></div>
+      </div>
+      ${coming.length ? `<div class="card b-12"><div class="card-head">${icon("gift")}<h3>Coming up</h3></div><div class="card-body" style="display:flex;flex-wrap:wrap;gap:8px">${coming.join("")}</div></div>` : ""}
+      <div class="card b-6"><div class="card-head">${icon("calendar")}<h3>Schedule</h3><a class="more" href="#/calendar">Calendar →</a></div>
+        <div class="card-body ${agenda ? "timeline" : ""}">${agenda || `<div class="empty">Nothing on the calendar today. ${state.boot.google.connected ? "" : `<a href="#/settings" style="color:var(--accent)">Connect Google Calendar</a>`}</div>`}</div></div>
+      <div class="card b-6"><div class="card-head">${icon("target")}<h3>Goals</h3><a class="more" href="#/goals">All →</a></div>
+        <div class="card-body">${goals.length ? goals.slice(0, 3).map((g) => `<a class="mini-goal" href="#/goals" style="color:inherit;text-decoration:none"><span class="fi-t" style="font-weight:550">${esc(g.title)}</span><span class="muted" style="font-size:12px">${g.progress || 0}%</span><div class="progress"><i style="width:${g.progress || 0}%"></i></div></a>`).join("")
+          : `<p class="muted" style="margin:6px 0 14px">Set up to three goals and Donna will coach you on them.</p><button class="btn sm" id="todayGoal">${icon("target")}Set a goal</button>`}</div></div>
+      <div class="card b-6"><div class="card-head">${icon("book")}<h3>Journal</h3><a class="more" href="#/journal">Open →</a></div>
+        <div class="card-body">${jr.body ? `<div style="font-family:var(--serif);font-size:17px;line-height:1.55;color:var(--ink-2)">${esc(jr.body.slice(0, 200))}${jr.body.length > 200 ? "…" : ""}</div>` : `<p class="muted" style="margin:6px 0 14px">You haven't written today. One honest line is enough.</p><a class="btn sm" href="#/journal">${icon("edit")}Write today's entry</a>`}</div></div>
+      <div class="card b-6"><div class="card-head">${icon("bulb")}<h3>Recent ideas</h3><a class="more" href="#/ideas">All →</a></div>
+        <div class="card-body">${ideas.slice(0, 3).map((i) => `<div class="focus-item"><span style="width:8px;height:8px;border-radius:50%;background:var(--gold);flex:none"></span><div style="min-width:0"><div class="fi-t" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(i.title || i.body.slice(0, 60))}</div><div class="fi-m">${esc(i.project_name || "Unsorted")}</div></div></div>`).join("") || `<div class="empty">No ideas yet. Press <kbd>C</kbd> then <kbd>I</kbd>.</div>`}</div></div>
     </div></div>`;
-  renderTaskMini($("#todayTasks"), open.slice(0, 7));
+  requestAnimationFrame(() => setTimeout(() => $$(".ring .r[data-p]", el).forEach((r) => r.style.setProperty("--p", r.dataset.p)), 60));
+  $("#todayGoal")?.addEventListener("click", () => goalForm({}));
+  renderTaskMini($("#todayTasks"), open.slice(0, 5));
   $("#askForm").onsubmit = (e) => { e.preventDefault(); const v = $("#askInput").value.trim(); if (v) askDonna(v); };
   $$("[data-ask]", el).forEach((b2) => (b2.onclick = () => askDonna(b2.dataset.ask)));
   bindMic($("#askMic"), $("#askInput"), (t) => askDonna(t));
@@ -1227,7 +1277,8 @@ VIEWS.settings = async (el, r) => {
     <div style="display:flex;gap:8px;margin-top:10px"><button class="btn primary" id="skillSave">Save skill</button><span class="muted" id="skillHint" style="font-size:12.5px;align-self:center"></span></div></section>
 
   <section class="card s-section" id="s-data" data-form><h2>Data & appearance</h2><p class="desc">Everything lives in <code>donna/data/donna.db</code> on this Mac.</p>
-    ${row("Theme", "", `<select class="select" name="theme">${["system", "light", "dark"].map((t) => `<option ${s.theme === t ? "selected" : ""}>${t}</option>`).join("")}</select>`)}
+    ${row("Theme", "Applies instantly", `<div class="seg" id="lookTheme">${[["system", "palette", "System"], ["light", "sun", "Light"], ["dark", "moon", "Dark"]].map(([t, ic, l]) => `<button type="button" data-t="${t}" class="${(state.boot.theme || "system") === t ? "on" : ""}">${icon(ic)}${l}</button>`).join("")}</div>`)}
+    ${row("Accent", "Donna's signature colour", `<div class="accent-swatches" id="lookAccent">${[["wine", "#7A2E3A"], ["indigo", "#4F46E5"], ["emerald", "#0E7A63"], ["ocean", "#1E5BC6"], ["amber", "#B4600B"], ["graphite", "#2E2C29"]].map(([a, c]) => `<button type="button" data-a="${a}" title="${a}" style="background:${c}" class="${(state.boot.accent || "wine") === a ? "sel" : ""}"></button>`).join("")}</div>`)}
     ${row("App URL", "Change when you host Donna (affects email links and Google redirect)", inp("public_url", s.public_url))}
     <div style="display:flex;gap:8px"><button class="btn primary" data-save>Save</button><a class="btn" href="/api/export">${icon("download")}Export data (JSON)</a></div>
     <div class="divider"></div>
@@ -1252,6 +1303,8 @@ VIEWS.settings = async (el, r) => {
   }));
   bindSettingsV2(el, s);
   $("#fxRefresh") && ($("#fxRefresh").onclick = async () => { try { const r = await POST("/api/subs/fx/refresh"); toast(Object.entries(r.rates).filter(([k]) => k !== (s.home_currency || "INR")).map(([k, v]) => `1 ${k} = ${(+v).toFixed(2)}`).join(" · ") || "Rates refreshed"); } catch (e) { fail(e); } });
+  $$("#lookTheme button").forEach((b) => (b.onclick = () => { setLook(b.dataset.t); $$("#lookTheme button").forEach((x) => x.classList.toggle("on", x === b)); }));
+  $$("#lookAccent button").forEach((b) => (b.onclick = () => { setLook(null, b.dataset.a); $$("#lookAccent button").forEach((x) => x.classList.toggle("sel", x === b)); }));
   $("#restoreFile").onchange = async (e) => {
     const f = e.target.files[0]; if (!f) return;
     if (!(await confirmBox(`Replace ALL of Donna's current data with “${f.name}”? Current files are kept aside on the server, but this Donna will show the backup's data from now on.`, "Restore"))) { e.target.value = ""; return; }

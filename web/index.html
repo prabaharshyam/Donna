@@ -13,8 +13,10 @@
   <meta name="apple-mobile-web-app-title" content="Donna">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;600&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;550;600;650;700&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/theme.css">
+  <script>/* apply saved look before first paint (no flash) */try{var t=localStorage.getItem("donna_theme")||"system",a=localStorage.getItem("donna_accent")||"wine";document.documentElement.dataset.theme=(t==="dark"||(t==="system"&&matchMedia("(prefers-color-scheme: dark)").matches))?"dark":"light";if(a!=="wine")document.documentElement.dataset.accent=a;if(localStorage.getItem("donna_rail")==="1")document.documentElement.classList.add("rail-pref")}catch(e){}</script>
 </head>
 <body>
   <div class="app">
@@ -22,9 +24,8 @@
       <div class="brand">
         <div class="monogram">D</div>
         <div class="brand-name">Donna</div>
-        <button class="icon-btn bell" id="bellBtn" title="Notifications"><span data-icon="bell"></span><i class="dot" hidden></i></button>
+        <button class="icon-btn rail-toggle" id="railToggle" title="Collapse sidebar ( [ )"><span data-icon="sidebar"></span></button>
       </div>
-      <button class="search-trigger" id="paletteBtn"><span data-icon="search"></span><span>Ask or search</span><kbd>⌘K</kbd></button>
       <nav class="nav" id="nav">
         <a href="#/" data-route=""><span data-icon="home"></span>Today</a>
         <a href="#/chat" data-route="chat"><span data-icon="sparkle"></span>Ask Donna</a>
@@ -48,13 +49,31 @@
       </nav>
       <div class="sidebar-foot">
         <a href="#/settings" data-route="settings" class="foot-link"><span data-icon="settings"></span>Admin & settings</a>
+        <div class="profile-card" id="profileCard" title="Your progress"></div>
         <div class="status-line" id="statusLine"></div>
       </div>
     </aside>
-    <main class="main" id="main"></main>
+    <main class="main" id="main">
+      <header class="topbar" id="topbar">
+        <button class="tb-btn tb-mobile-menu" id="mobileMenu" title="Menu"><span data-icon="menu"></span></button>
+        <div class="crumb" id="crumb"></div>
+        <span class="spacer"></span>
+        <button class="tb-search" id="paletteBtn"><span data-icon="search"></span><span>Ask Donna or search…</span><kbd>⌘K</kbd></button>
+        <button class="tb-btn tb-add" id="quickAdd" title="Quick add ( C )"><span data-icon="plus"></span><span>New</span></button>
+        <button class="tb-btn bell" id="bellBtn" title="Notifications"><span data-icon="bell"></span><i class="dot" hidden></i></button>
+        <button class="tb-btn tb-hide-m" id="themeBtn" title="Theme"><span data-icon="moon"></span></button>
+      </header>
+      <div id="view"></div>
+    </main>
   </div>
 
-  <button class="mobile-menu icon-btn" id="mobileMenu"><span data-icon="menu"></span></button>
+  <nav class="tabbar" id="tabbar">
+    <a href="#/" data-tab=""><span data-icon="home"></span>Today</a>
+    <a href="#/chat" data-tab="chat"><span data-icon="sparkle"></span>Donna</a>
+    <a href="#/tasks" data-tab="tasks"><span data-icon="check"></span>To Do</a>
+    <a href="#/calendar" data-tab="calendar"><span data-icon="calendar"></span>Calendar</a>
+    <button id="tabMore"><span data-icon="menu"></span>More</button>
+  </nav>
   <div class="notif-panel" id="notifPanel" hidden></div>
   <div class="toasts" id="toasts"></div>
   <div class="modal-root" id="modalRoot"></div>
@@ -78,6 +97,7 @@
   </div>
   <script src="/static/app.js"></script>
   <script src="/static/subs.js"></script>
+  <script src="/static/shell.js"></script>
   <script src="/static/features.js"></script>
 </body>
 </html>

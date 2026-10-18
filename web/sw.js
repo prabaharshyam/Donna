@@ -1,6 +1,6 @@
 // Donna service worker: caches the app shell so it opens instantly; data always comes live from the API.
-const CACHE = "donna-shell-v3";
-const SHELL = ["/", "/static/app.css", "/static/app.js", "/static/subs.js", "/static/features.js", "/static/icon.svg"];
+const CACHE = "donna-shell-v5";
+const SHELL = ["/", "/static/app.css", "/static/app.js", "/static/subs.js", "/static/shell.js", "/static/theme.css", "/static/features.js", "/static/icon.svg"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

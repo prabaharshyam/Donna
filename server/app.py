@@ -103,7 +103,7 @@ def bootstrap():
         "user_name": db.get_setting("user_name", ""), "projects": S.projects(), "counts": S.task_counts(),
         "vault": {"configured": secure.vault_configured(), "unlocked": secure.vault_unlocked()},
         "google": cal.status(),
-        "email": mailer.configured(), "streak": S.journal_streak(), "theme": db.get_setting("theme", "system"),
+        "email": mailer.configured(), "streak": S.journal_streak(), "theme": db.get_setting("theme", "system"), "accent": db.get_setting("accent", "wine"),
         "onboarded": bool(db.get_setting("onboarded", False)),
         "inbox_pending": db.row("SELECT COUNT(*) n FROM inbox_items WHERE status='pending'")["n"],
         "renewals_soon": len(L.renewals(days_ahead=7)),
@@ -466,7 +466,7 @@ def notifications_seen():
 
 # ---------------- Settings / admin ----------------
 PUBLIC_SETTINGS = {
-    "user_name": "", "notify_email": "", "smtp_host": "", "smtp_port": 587, "smtp_user": "", "smtp_from": "",
+    "user_name": "", "accent": "wine", "notify_email": "", "smtp_host": "", "smtp_port": 587, "smtp_user": "", "smtp_from": "",
     "email_enabled": True, "briefing_enabled": True, "briefing_time": "07:30", "journal_nudge_time": "21:00",
     "event_reminder_min": 15, "default_event_minutes": 30, "work_start": "09:00", "work_end": "18:00",
     "llm_provider": "claude", "claude_model": "claude-opus-5-5", "claude_effort": "medium",
