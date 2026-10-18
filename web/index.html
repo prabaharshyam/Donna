@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Donna</title>
+  <link rel="icon" href="/static/icon.svg">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/static/icon.svg">
+  <meta name="theme-color" content="#7A2E3A">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Donna">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;600&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <div class="monogram">D</div>
+        <div class="brand-name">Donna</div>
+        <button class="icon-btn bell" id="bellBtn" title="Notifications"><span data-icon="bell"></span><i class="dot" hidden></i></button>
+      </div>
+      <button class="search-trigger" id="paletteBtn"><span data-icon="search"></span><span>Ask or search</span><kbd>⌘K</kbd></button>
+      <nav class="nav" id="nav">
+        <a href="#/" data-route=""><span data-icon="home"></span>Today</a>
+        <a href="#/chat" data-route="chat"><span data-icon="sparkle"></span>Ask Donna</a>
+        <a href="#/inbox" data-route="inbox"><span data-icon="mail"></span>Inbox<em id="navInbox"></em></a>
+        <div class="nav-label">Organise</div>
+        <a href="#/tasks" data-route="tasks"><span data-icon="check"></span>To Do<em id="navTaskCount"></em></a>
+        <a href="#/calendar" data-route="calendar"><span data-icon="calendar"></span>Calendar</a>
+        <a href="#/goals" data-route="goals"><span data-icon="target"></span>Goals</a>
+        <a href="#/ideas" data-route="ideas"><span data-icon="bulb"></span>Ideas</a>
+        <div class="nav-label">Reflect</div>
+        <a href="#/journal" data-route="journal"><span data-icon="book"></span>Journal</a>
+        <a href="#/review" data-route="review"><span data-icon="chart"></span>Weekly review</a>
+        <div class="nav-label">Life admin</div>
+        <a href="#/people" data-route="people"><span data-icon="users"></span>People<em id="navPeople"></em></a>
+        <a href="#/renewals" data-route="renewals"><span data-icon="refresh"></span>Renewals<em id="navRenewals"></em></a>
+        <a href="#/documents" data-route="documents"><span data-icon="file"></span>Documents</a>
+        <div class="nav-label">Remember</div>
+        <a href="#/memory" data-route="memory"><span data-icon="user"></span>Memory</a>
+        <a href="#/vault" data-route="vault"><span data-icon="lock"></span>Vault<em id="navVault"></em></a>
+      </nav>
+      <div class="sidebar-foot">
+        <a href="#/settings" data-route="settings" class="foot-link"><span data-icon="settings"></span>Admin & settings</a>
+        <div class="status-line" id="statusLine"></div>
+      </div>
+    </aside>
+    <main class="main" id="main"></main>
+  </div>
+
+  <button class="mobile-menu icon-btn" id="mobileMenu"><span data-icon="menu"></span></button>
+  <div class="notif-panel" id="notifPanel" hidden></div>
+  <div class="toasts" id="toasts"></div>
+  <div class="modal-root" id="modalRoot"></div>
+  <div class="palette" id="palette" hidden>
+    <div class="palette-box">
+      <div class="palette-input"><span data-icon="sparkle"></span><input id="paletteInput" placeholder="Ask Donna anything, or search everything…" autocomplete="off"></div>
+      <div class="palette-results" id="paletteResults"></div>
+      <div class="palette-foot"><span><kbd>↵</kbd> ask Donna</span><span><kbd>esc</kbd> close</span></div>
+    </div>
+  </div>
+  <div class="login" id="login" hidden>
+    <form class="login-box" id="loginForm">
+      <div class="monogram" style="width:52px;height:52px;font-size:36px;border-radius:15px;margin:0 auto 18px">D</div>
+      <h2>Welcome back.</h2>
+      <p class="muted" style="margin:0 0 22px">Donna is private. Sign in to continue.</p>
+      <input class="input" type="password" name="password" placeholder="App password" autocomplete="current-password" required>
+      <input class="input" name="code" placeholder="6-digit code from your authenticator" inputmode="numeric" autocomplete="one-time-code" maxlength="7" hidden style="margin-top:10px">
+      <button class="btn primary" style="width:100%;justify-content:center;margin-top:14px">Sign in</button>
+      <div class="login-err" id="loginErr"></div>
+    </form>
+  </div>
+  <script src="/static/app.js"></script>
+  <script src="/static/features.js"></script>
+</body>
+</html>

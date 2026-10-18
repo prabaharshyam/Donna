@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+cryptography
+pypdf
+python-multipart
+anthropic>=1.0
