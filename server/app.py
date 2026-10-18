@@ -102,8 +102,7 @@ def bootstrap():
     return {
         "user_name": db.get_setting("user_name", ""), "projects": S.projects(), "counts": S.task_counts(),
         "vault": {"configured": secure.vault_configured(), "unlocked": secure.vault_unlocked()},
-        "google": {"configured": cal.google_configured(), "connected": cal.google_connected(),
-                   "account": db.get_setting("google_account", "")},
+        "google": cal.status(),
         "email": mailer.configured(), "streak": S.journal_streak(), "theme": db.get_setting("theme", "system"),
         "onboarded": bool(db.get_setting("onboarded", False)),
         "inbox_pending": db.row("SELECT COUNT(*) n FROM inbox_items WHERE status='pending'")["n"],
@@ -344,7 +343,7 @@ def vault_delete(vid: int):
 def events(start: str = None, end: str = None):
     start = start or date.today().isoformat()
     end = end or (date.fromisoformat(start) + timedelta(days=13)).isoformat()
-    return {"events": cal.list_events(start, end), "google": cal.google_connected()}
+    return {"events": cal.list_events(start, end), "google": cal.google_connected(), "google_status": cal.status()}
 
 
 @app.post("/api/events")
@@ -380,6 +379,11 @@ def google_callback(code: str = None, state: str = None, error: str = None):
     except Exception as e:
         return RedirectResponse(f"/#/settings?google=error&msg={str(e)[:120]}")
     return RedirectResponse("/#/settings?google=connected")
+
+
+@app.get("/api/google/status")
+def google_status(check: bool = False):
+    return cal.health_check() if check else cal.status()
 
 
 @app.post("/api/google/disconnect")
@@ -472,7 +476,7 @@ PUBLIC_SETTINGS = {
     "imap_host": "", "inbox_enabled": False, "inbox_interval_hours": 3, "inbox_days": 2, "inbox_scan_sent": True,
     "review_enabled": True, "review_day": 6, "review_time": "18:00", "prep_enabled": True, "prep_lead_min": 30,
     "prep_ai": True, "birthday_remind_days": 7, "nudge_weekday": 5, "telegram_notify": True, "allowed_hosts": "",
-    "timezone": "Asia/Kolkata", "mentor_enabled": True, "home_currency": "INR", "subs_budget": 0,
+    "google_testing_mode": True, "timezone": "Asia/Kolkata", "mentor_enabled": True, "home_currency": "INR", "subs_budget": 0,
     "fx_markup_percent": 0, "subs_email_watch": True, "fx_manual": {}, "reflection_nudge_time": "20:30",
 }
 SECRET_SETTINGS = {"smtp_password", "google_client_secret", "telegram_token", "anthropic_api_key"}

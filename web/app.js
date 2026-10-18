@@ -185,7 +185,7 @@ async function refreshBoot() {
   $("#navVault").innerHTML = b.vault.configured ? (b.vault.unlocked ? icon("unlock") : "") : "";
   $("#statusLine").innerHTML = `
     <span title="AI model"><i id="aiDot"></i>AI</span>
-    <span title="Google Calendar"><i class="${b.google.connected ? "on" : ""}"></i>Calendar</span>
+    <span title="${b.google.needs_reconnect ? "Google Calendar disconnected: reconnect in Admin" : b.google.connected ? "Google Calendar connected" : "Google Calendar not connected"}"><i class="${b.google.needs_reconnect ? "off" : b.google.connected ? "on" : ""}"></i>Calendar</span>
     <span title="Email reminders"><i class="${b.email ? "on" : ""}"></i>Email</span>`;
   GET("/api/ai/status").then((s) => { state.ai = s; const d = $("#aiDot"); if (d) { d.className = s.ok && s.model_installed ? "on" : "off"; d.parentElement.title = s.ok ? `AI: ${s.display_name || s.model}` : (s.error || "AI not connected"); } }).catch(() => {});
   applyTheme(b.theme);
@@ -730,7 +730,7 @@ const mondayOf = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); x.setDa
 VIEWS.calendar = async (el) => {
   if (!state.cal.weekStart) state.cal.weekStart = mondayOf(new Date());
   const ws = state.cal.weekStart, we = addDays(ws, 6);
-  const { events, google } = await GET(`/api/events?start=${isoDate(ws)}&end=${isoDate(we)}`);
+  const { events, google, google_status: gs } = await GET(`/api/events?start=${isoDate(ws)}&end=${isoDate(we)}`);
   const days = [...Array(7)].map((_, i) => addDays(ws, i));
   const label = ws.getMonth() === we.getMonth() ? ws.toLocaleDateString(undefined, { month: "long", year: "numeric" }) : `${ws.toLocaleDateString(undefined, { month: "short" })} – ${we.toLocaleDateString(undefined, { month: "short", year: "numeric" })}`;
   el.innerHTML = `<div class="page wide"><div class="cal-wrap">
@@ -741,6 +741,9 @@ VIEWS.calendar = async (el) => {
       ${google ? "" : `<a class="btn ghost sm" href="#/settings?s=google">Connect Google</a>`}
       <button class="btn sm" id="blockAI">${icon("sparkle")}Ask Donna to block time</button>
       <button class="btn primary sm" id="newEv">${icon("plus")}New event</button></div>
+    ${gs?.needs_reconnect ? `<div class="reconnect-bar">🔌 <b>Google Calendar is disconnected.</b> Google ends access every 7 days while your Google app is in Testing. Your Google events aren't shown until you reconnect.<a class="btn sm accent" href="/api/google/auth">Reconnect</a></div>`
+      : gs?.error ? `<div class="reconnect-bar">⚠️ <span>${esc(gs.error).replace(/(https:\/\/\S+)/, '<a href="$1" target="_blank" rel="noopener" style="color:var(--accent);word-break:break-all">open Google Cloud</a>')}</span></div>`
+      : gs?.days_left != null && gs.days_left <= 1 ? `<div class="reconnect-bar">⏳ Google Calendar disconnects ${gs.days_left < 0.5 ? "soon" : "tomorrow"}. Reconnect now to reset Google's 7-day limit.<a class="btn sm" href="/api/google/auth">Reconnect</a></div>` : ""}
     <div class="week" id="week"></div></div></div>`;
   const week = $("#week");
   const todayIso = TODAY();
@@ -1155,7 +1158,9 @@ VIEWS.settings = async (el, r) => {
     <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn primary" data-save>Save</button><button class="btn" id="fxRefresh">${icon("refresh")}Refresh exchange rates</button><a class="btn" href="#/subscriptions">${icon("card")}Open Subscriptions</a></div></section>
 
   <section class="card s-section" id="s-google" data-form><h2>Google Calendar</h2><p class="desc">Let Donna read your calendar, block time and book appointments. Your OAuth credentials stay on this machine.</p>
-    ${s.google_connected ? `<div style="display:flex;align-items:center;gap:12px;margin-bottom:16px"><span class="status-pill on"><i></i>Connected${s.google_account ? " · " + esc(s.google_account) : ""}</span><button class="btn sm" id="gDisconnect">Disconnect</button></div>` : ""}
+    ${state.boot.google.needs_reconnect ? `<div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap"><span class="status-pill off"><i></i>Disconnected by Google: reconnect to see your calendar</span></div>`
+      : s.google_connected ? `<div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap"><span class="status-pill on"><i></i>Connected${s.google_account ? " · " + esc(s.google_account) : ""}</span>${state.boot.google.days_left != null ? `<span class="muted" style="font-size:12.5px">Google will disconnect in about ${Math.ceil(state.boot.google.days_left)} day${Math.ceil(state.boot.google.days_left) === 1 ? "" : "s"} (Testing mode). Donna will remind you the day before.</span>` : ""}<button class="btn sm" id="gDisconnect">Disconnect</button></div>` : ""}
+    ${row("My Google app is in Testing mode", "Google ends access every 7 days in Testing; Donna warns you a day before and alerts you if it drops. Turn off once your app is published.", sw("google_testing_mode", s.google_testing_mode))}
     <div class="callout"><b>One-time setup (about 5 minutes)</b><ol>
       <li>Open <b>console.cloud.google.com</b>, then create a project (e.g. “Donna”).</li>
       <li>Go to <b>APIs & Services → Library</b> and enable <b>Google Calendar API</b>.</li>
@@ -1166,7 +1171,7 @@ VIEWS.settings = async (el, r) => {
     <div class="field"><label>Client ID</label>${inp("google_client_id", s.google_client_id, 'placeholder="xxxx.apps.googleusercontent.com"')}</div>
     <div class="field"><label>Client secret</label><input class="input" type="password" name="google_client_secret" autocomplete="off" placeholder="${s.secrets.google_client_secret ? "•••••••• saved (encrypted)" : "GOCSPX-…"}"></div>
     ${row("Calendar ID", "“primary” is your main calendar", inp("google_calendar_id", s.google_calendar_id))}
-    <div style="display:flex;gap:8px"><button class="btn" data-save>Save credentials</button><button class="btn primary" id="gConnect">${icon("link")}${s.google_connected ? "Reconnect" : "Connect Google Calendar"}</button></div></section>
+    <div style="display:flex;gap:8px"><button class="btn" data-save>Save credentials</button><button class="btn primary" id="gConnect">${icon("link")}${s.google_connected || state.boot.google.needs_reconnect ? "Reconnect" : "Connect Google Calendar"}</button></div></section>
 
   <section class="card s-section" id="s-security" data-form><h2>Vault & security</h2><p class="desc">Your vault is AES-256-GCM encrypted with a key derived from your master password (scrypt). Integration secrets are encrypted with a local app key.</p>
     ${row("Auto-lock vault after", "Minutes of inactivity", inp("vault_autolock_min", s.vault_autolock_min, 'type="number" min="1"'))}

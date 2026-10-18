@@ -40,8 +40,64 @@ def google_configured():
     return bool(db.get_setting("google_client_id")) and bool(secure.get_secret("google_client_secret"))
 
 
+class GoogleDisconnected(RuntimeError):
+    pass
+
+
+TESTING_DAYS = 7  # Google expires refresh tokens after 7 days while the OAuth app is in "Testing"
+
+
 def google_connected():
     return bool(secure.get_secret("google_refresh_token"))
+
+
+def _mark_disconnected(reason):
+    """Google revoked/expired our access: forget the dead tokens and tell the user once."""
+    from . import services as S
+    for k in ("google_refresh_token", "google_access_token", "google_access_expiry"):
+        db.run("DELETE FROM settings WHERE key=?", (k,))
+    first = not db.get_setting("google_needs_reconnect")
+    db.set_setting("google_needs_reconnect", {"at": db.now(), "reason": str(reason)[:200]})
+    if first:
+        url = db.get_setting("public_url", "http://localhost:8765").rstrip("/") + "/#/settings?s=google"
+        S.notify("🔌 Google Calendar disconnected",
+                 f"Google ended Donna's access (it does this every {TESTING_DAYS} days for apps in Testing). Reconnect in 20 seconds: {url}",
+                 "#/settings?s=google")
+
+
+def _explain(msg):
+    if "has not been used in project" in msg or "is disabled" in msg or "accessNotConfigured" in msg:
+        import re as _re
+        m = _re.search(r"project (\d+)", msg)
+        url = "https://console.cloud.google.com/apis/library/calendar-json.googleapis.com" + (f"?project={m.group(1)}" if m else "")
+        return f"The Google Calendar API is turned off in your Google Cloud project. Enable it here, wait a minute, then reload: {url}"
+    return msg[:300]
+
+
+def status():
+    connected_at = db.get_setting("google_connected_at", "")
+    out = {"configured": google_configured(), "connected": google_connected(),
+           "needs_reconnect": bool(db.get_setting("google_needs_reconnect")), "account": db.get_setting("google_account", ""),
+           "connected_at": connected_at, "testing_mode": bool(db.get_setting("google_testing_mode", True)),
+           "error": (db.get_setting("google_last_error") or {}).get("message", "")}
+    if out["connected"] and connected_at and out["testing_mode"]:
+        age = (datetime.now() - datetime.fromisoformat(connected_at)).total_seconds() / 86400
+        out["days_left"] = max(0, round(TESTING_DAYS - age, 1))
+    return out
+
+
+def health_check():
+    """Force a token refresh so an expired connection is noticed even when nobody opens the calendar."""
+    if not google_connected():
+        return status()
+    db.set_setting("google_access_expiry", 0)
+    try:
+        _access_token()
+    except GoogleDisconnected:
+        pass
+    except Exception:
+        pass  # offline etc.: try again next time
+    return status()
 
 
 def auth_url():
@@ -68,6 +124,8 @@ def finish_oauth(code, state):
     if tok.get("refresh_token"):
         secure.set_secret("google_refresh_token", tok["refresh_token"])
     _store_access(tok)
+    db.set_setting("google_connected_at", db.now())
+    db.run("DELETE FROM settings WHERE key='google_needs_reconnect'")
     try:
         info = _api("GET", "/users/me/calendarList/primary")
         db.set_setting("google_account", info.get("id", ""))
@@ -81,13 +139,20 @@ def _store_access(tok):
 
 
 def disconnect():
-    for k in ("google_refresh_token", "google_access_token", "google_access_expiry", "google_account"):
+    for k in ("google_refresh_token", "google_access_token", "google_access_expiry", "google_account", "google_connected_at", "google_needs_reconnect"):
         db.run("DELETE FROM settings WHERE key=?", (k,))
 
 
 def _access_token():
     if time.time() > float(db.get_setting("google_access_expiry", 0)):
-        tok = _token_request({"refresh_token": secure.get_secret("google_refresh_token"), "grant_type": "refresh_token"})
+        try:
+            tok = _token_request({"refresh_token": secure.get_secret("google_refresh_token"), "grant_type": "refresh_token"})
+        except urllib.error.HTTPError as e:
+            body = e.read().decode(errors="ignore")
+            if e.code in (400, 401) and ("invalid_grant" in body or "unauthorized" in body.lower()):
+                _mark_disconnected("invalid_grant")
+                raise GoogleDisconnected("Google Calendar is disconnected. Reconnect it in Admin → Google Calendar.")
+            raise RuntimeError(f"Google sign-in error {e.code}: {body[:200]}")
         _store_access(tok)
     return secure.get_secret("google_access_token")
 
@@ -101,6 +166,9 @@ def _api(method, path, params=None, body=None):
             raw = r.read()
             return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as e:
+        if e.code == 401:  # access revoked by the user or by Google
+            _mark_disconnected("401 from Calendar API")
+            raise GoogleDisconnected("Google Calendar is disconnected. Reconnect it in Admin → Google Calendar.")
         raise RuntimeError(f"Google Calendar error {e.code}: {e.read().decode()[:300]}")
 
 
@@ -115,10 +183,20 @@ def list_events(start: str, end: str):
     out = []
     for e in db.rows("SELECT * FROM events WHERE start < ? AND end >= ? ORDER BY start", (end_excl, start)):
         out.append({**e, "id": str(e["id"]), "source": "local", "link": ""})
+    res = {}
     if google_connected():
-        res = _api("GET", f"/calendars/{urllib.parse.quote(calendar_id())}/events", {
-            "timeMin": _to_rfc(start + "T00:00"), "timeMax": _to_rfc(end_excl + "T00:00"),
-            "singleEvents": "true", "orderBy": "startTime", "maxResults": 250})
+        try:
+            res = _api("GET", f"/calendars/{urllib.parse.quote(calendar_id())}/events", {
+                "timeMin": _to_rfc(start + "T00:00"), "timeMax": _to_rfc(end_excl + "T00:00"),
+                "singleEvents": "true", "orderBy": "startTime", "maxResults": 250})
+        except GoogleDisconnected:
+            res = {}  # keep working with Donna's own calendar; the user has been told to reconnect
+        except RuntimeError as e:
+            res = {}  # e.g. Calendar API disabled: show Donna's own events and explain in the UI
+            db.set_setting("google_last_error", {"at": db.now(), "message": _explain(str(e))})
+        else:
+            db.run("DELETE FROM settings WHERE key='google_last_error'")
+    if res:
         for g in res.get("items", []):
             if g.get("status") == "cancelled":
                 continue
@@ -149,8 +227,13 @@ def create_event(title, start, end=None, location="", description="", all_day=Fa
             body["end"] = {"dateTime": _to_rfc(end)}
         lead = int(db.get_setting("event_reminder_min", 15))
         body["reminders"] = {"useDefault": False, "overrides": [{"method": "popup", "minutes": lead}]}
-        g = _api("POST", f"/calendars/{urllib.parse.quote(calendar_id())}/events", body=body)
-        return {"id": g["id"], "source": "google", "title": title, "start": start, "end": end, "link": g.get("htmlLink", "")}
+        try:
+            g = _api("POST", f"/calendars/{urllib.parse.quote(calendar_id())}/events", body=body)
+            return {"id": g["id"], "source": "google", "title": title, "start": start, "end": end, "link": g.get("htmlLink", "")}
+        except GoogleDisconnected:
+            local = create_event(title, start, end, location, description, all_day, target="local")
+            local["warning"] = "Google Calendar is disconnected, so this was saved in Donna's own calendar. Reconnect Google in Admin."
+            return local
     eid = db.run("INSERT INTO events(title,start,end,location,description,all_day) VALUES (?,?,?,?,?,?)",
                  (title, start, end, location, description, 1 if all_day else 0))
     db.index("event", eid, title, f"{start} {location} {description}")

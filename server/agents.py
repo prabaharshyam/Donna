@@ -201,8 +201,11 @@ def t_create_event(title, start, end=None, location="", description="", all_day=
     clashes = [e["title"] for e in cal.list_events(start[:10], start[:10])
                if not e.get("all_day") and e["start"] < (end or start) and e["end"] > start]
     e = cal.create_event(title, start, end, location, description, all_day)
-    return {"created": _ev({**e, "all_day": all_day}), "overlaps_with": clashes,
-            "email_reminder_minutes_before": int(db.get_setting("event_reminder_min", 15))}
+    out = {"created": _ev({**e, "all_day": all_day}), "overlaps_with": clashes,
+           "email_reminder_minutes_before": int(db.get_setting("event_reminder_min", 15))}
+    if e.get("warning"):
+        out["warning_tell_user"] = e["warning"]
+    return out
 
 
 def t_delete_event(event_id, source="local"):

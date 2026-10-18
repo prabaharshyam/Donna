@@ -341,6 +341,21 @@ def _safe(fn, *a):
         log.warning("%s failed: %s", getattr(fn, "__name__", fn), e)
 
 
+def google_watch():
+    """Every 6 hours: confirm Google Calendar still works; day-6 heads-up in Testing mode."""
+    from . import calendar_svc as cal
+    if not cal.google_connected():
+        return
+    slot = datetime.now().strftime("%Y-%m-%d") + f"-{datetime.now().hour // 6}"
+    if _once(f"gcalhealth:{slot}"):
+        _background("gcalhealth", cal.health_check)
+    st = cal.status()
+    if st.get("days_left") is not None and st["days_left"] <= 1 and _once(f"gcal6:{st['connected_at']}"):
+        url = db.get_setting("public_url", "http://localhost:8765").rstrip("/") + "/#/settings?s=google"
+        S.notify("Google Calendar disconnects tomorrow",
+                 f"Reconnect now to reset Google's 7-day limit (takes 20 seconds): {url}", "#/settings?s=google")
+
+
 def mentor_note():
     """Donna's daily mentor note, written at briefing time and pushed to phone."""
     if not db.get_setting("mentor_enabled", True):
@@ -378,7 +393,7 @@ def loop():
     while True:
         for job in (task_reminders, event_reminders, daily_briefing, journal_nudge, meeting_prep, renewal_alerts,
                     people_nudges, weekly_review, inbox_scan, mentor_note, reflection_nudge,
-                    subscription_alerts, subscription_background):
+                    subscription_alerts, subscription_background, google_watch):
             try:
                 job()
             except Exception as e:
