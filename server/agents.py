@@ -961,7 +961,8 @@ def run(conversation_id: int, text: str, agent: str = None):
     if not saved_times and fact_only:
         saved_times = re.findall(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", json.dumps(
             [db.row("SELECT reminder_at FROM tasks WHERE COALESCE(updated_at, created_at) >= datetime('now','localtime','-2 hours') ORDER BY id DESC")]))
-    final = TP.fix_wording(final, saved_times)
+    if llm.provider() != "claude":  # crutch for small local models; Claude words times correctly
+        final = TP.fix_wording(final, saved_times)
     gained = gamify.total_xp() - xp_before
     if gained > 0:
         lvl = gamify.level_for(gamify.total_xp())
