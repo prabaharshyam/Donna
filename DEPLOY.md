@@ -8,7 +8,39 @@ inbox scans run in the background. Serverless platforms (Vercel, Lambda) won't w
 > Telegram bot would fight over messages and send every reminder twice. Stop the Mac copy once the
 > server is live.
 
-## Recommended: Railway (≈ US$5/month)
+## Free: Google Cloud e2-micro (Always Free tier)
+
+### 1. Create the server (one time, ~5 minutes)
+1. Go to **console.cloud.google.com** → create a project (e.g. "Donna") → enable billing (a card is needed for
+   verification; staying within the free tier shouldn't incur charges).
+2. **Compute Engine → VM instances → Create instance**:
+   - **Region**: `us-central1`, `us-west1` or `us-east1` (only these are in the free tier)
+   - **Machine type**: `e2-micro`
+   - **Boot disk**: Debian 12, **Standard persistent disk**, **30 GB**
+   - **Firewall**: tick **Allow HTTP traffic** and **Allow HTTPS traffic**
+3. *(Recommended)* **VPC network → IP addresses** → reserve the VM's external IP as **static**, so Donna's address
+   never changes.
+4. Check the current free-tier terms and the pricing calculator before you rely on it. Google may bill a small
+   amount for the external IPv4 address. Set a **budget alert** (Billing → Budgets) at a few dollars to be safe.
+
+### 2. Install Donna (one command)
+On the VM page, click **SSH** (opens a terminal in your browser) and run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/prabaharshyam/Donna/main/deploy/gcp/setup.sh | sudo bash
+```
+
+It asks for an admin password and your Claude API key (typed on the server, never shown), then prints your
+address, e.g. `https://34-12-56-78.sslip.io`: free HTTPS based on your server's IP, no domain needed.
+Have your own domain? Point an A record at the VM's IP and run `sudo DONNA_DOMAIN=donna.example.com bash setup.sh`.
+
+### 3. Move your data
+Same as below: **Download full backup** on the Mac → stop the Mac copy → **Restore from backup** on the server → turn on 2FA.
+
+Later: `sudo donna-update` pulls the latest code from GitHub; `sudo docker logs -f donna` shows logs;
+daily snapshots of Donna's data are kept in `/var/backups/donna` (last 7).
+
+## Easiest paid option: Railway (≈ US$5/month)
 
 1. **New project → Deploy from GitHub repo** → pick `prabaharshyam/Donna`. Railway detects the `Dockerfile`.
 2. **Add a volume** to the service, mounted at **`/data`**.

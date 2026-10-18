@@ -8,3 +8,4 @@ data/
 .env
 README.md
 DEPLOY.md
+deploy/
